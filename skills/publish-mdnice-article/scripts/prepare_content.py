@@ -87,6 +87,7 @@ def strip_notion_metadata(lines: list[str]) -> list[str]:
 
 def extract_title_and_body(content: str) -> tuple[str, str]:
     """Extract title from first H1 header and return (title, body)."""
+    content = content.lstrip('\ufeff')
     lines = content.split('\n')
 
     # Look for H1 in first 5 lines
@@ -113,6 +114,14 @@ def extract_title_and_body(content: str) -> tuple[str, str]:
     return title, body
 
 
+def normalize_image_src(src: str) -> str:
+    """Normalize Markdown image destinations before path resolution."""
+    normalized = src.strip()
+    if normalized.startswith('<') and normalized.endswith('>'):
+        normalized = normalized[1:-1].strip()
+    return normalized
+
+
 def strip_image_references(content: str, source_dir: str = None) -> tuple[str, list[dict]]:
     """Remove image markdown references and return positions for later insertion.
 
@@ -127,7 +136,7 @@ def strip_image_references(content: str, source_dir: str = None) -> tuple[str, l
             'original': match.group(0),
             'start': match.start(),
             'alt': match.group(1),
-            'src': match.group(2),
+            'src': normalize_image_src(match.group(2)),
         })
 
     # Pattern 2: ![[wikilink]]
@@ -262,6 +271,9 @@ def generate_paste_js(content: str) -> str:
 
 
 def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+
     parser = argparse.ArgumentParser(description='Prepare Markdown for Markdown Nice editor')
     parser.add_argument('path', help='Path to Markdown file or directory containing .md files')
     parser.add_argument('--output', '-o', default='/tmp/mdnice_paste_content.js',
@@ -277,7 +289,7 @@ def main():
     md_path = find_markdown_file(args.path)
 
     # Read content
-    with open(md_path, 'r', encoding='utf-8') as f:
+    with open(md_path, 'r', encoding='utf-8-sig') as f:
         content = f.read()
 
     # Strip metadata

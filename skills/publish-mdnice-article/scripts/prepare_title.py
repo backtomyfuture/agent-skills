@@ -28,7 +28,14 @@ def generate_js(title: str) -> str:
   const visible = el => !!el && el.offsetParent !== null;
   const modal = [...document.querySelectorAll('.ant-modal-content')]
     .find(el => visible(el) || el.getBoundingClientRect().width > 0);
-  const input = document.querySelector(inputSelector)
+  const input = [...(modal?.querySelectorAll('.ant-modal-body input') || [])]
+      .find(el => el.placeholder === '请输入标题')
+    || [...(modal?.querySelectorAll('.ant-modal-body input') || [])]
+      .find(el => {{
+        const labelText = el.closest('.ant-row, .ant-form-item, div')?.textContent || '';
+        return labelText.includes('文章标题');
+      }})
+    || document.querySelector(inputSelector)
     || modal?.querySelector('.ant-modal-body input')
     || [...document.querySelectorAll('.ant-modal-body input')].find(visible);
 
