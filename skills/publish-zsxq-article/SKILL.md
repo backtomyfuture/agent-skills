@@ -33,6 +33,15 @@ All scripts live in this skill's `scripts/` directory. Use absolute paths when i
 - `/Users/jarod/.agents/skills/publish-zsxq-article/scripts/prepare_content.py` — preprocesses Markdown and writes a paste-ready JS file.
 - `/Users/jarod/.agents/skills/publish-zsxq-article/scripts/prepare_image.py` — base64-encodes an image and writes a paste-ready JS file.
 
+## Windows notes
+
+PowerShell 5 and Windows process argument limits are the two common traps:
+
+- Read local Markdown with explicit UTF-8 if you inspect or copy it in PowerShell (`Get-Content -Raw -Encoding UTF8`). The scripts read Markdown as `utf-8-sig`, so a UTF-8 BOM will not leak into the title/body.
+- Do not pass paste JS containing Chinese text directly as a command argument on Windows. It can arrive in the browser as mojibake. Use `agent-browser eval -b` with UTF-8 base64 for content paste.
+- Large screenshots can produce a JS payload that exceeds Windows command-line limits. `prepare_image.py` now detects this and, on Windows, resizes/compresses through Pillow or a PowerShell `System.Drawing` fallback before writing paste JS. If both fail, install Pillow with `python -m pip install Pillow` or intentionally re-run with `--allow-large-inline`.
+- Notion/Markdown image links may be written as `![](<./media/image.png>)`; `prepare_content.py` normalizes the angle brackets before resolving the local file.
+
 ## Workflow
 
 The skill runs four pipelines in order. The first two are always required; the image pipeline only runs when the article has images; the publish pipeline always runs last.
@@ -72,6 +81,13 @@ agent-browser --headed true --session-name zsxq --profile ~/.agent-browser/profi
 
 # Without profile
 agent-browser --headed true --session-name zsxq open "https://wx.zsxq.com/article?groupId=88882188185282"
+```
+
+On Windows, create and use the profile with PowerShell paths:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agent-browser\profiles\zsxq" | Out-Null
+agent-browser --headed true --session-name zsxq --profile "$env:USERPROFILE\.agent-browser\profiles\zsxq" open "https://wx.zsxq.com/article?groupId=88882188185282"
 ```
 
 Then check login state in a single eval. The title input only exists on the editor page, and a redirect to `/login` shows up in `location.href`:
@@ -198,6 +214,14 @@ Dispatch the JS file that `prepare_content.py` wrote. This fires the synthetic p
 agent-browser --session-name zsxq eval "$(cat /tmp/zsxq_paste_content.js)"
 ```
 
+On Windows/PowerShell, use UTF-8 base64 so Chinese text does not become mojibake:
+
+```powershell
+$js = Get-Content -Raw -Encoding UTF8 -Path "C:\tmp\zsxq_paste_content.js"
+$b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($js))
+agent-browser --session-name zsxq eval -b $b64
+```
+
 Don't use `fill` or `type` here — those bypass the paste handler, leaving raw Markdown on the page.
 
 Verify the body was inserted:
@@ -218,6 +242,13 @@ Before the loop, generate the paste JS for each image:
 
 ```bash
 python3 /Users/jarod/.agents/skills/publish-zsxq-article/scripts/prepare_image.py '<resolved_path>'
+```
+
+On Windows, Pillow is recommended before publishing posts with large screenshots. If it is not installed, the helper will try a PowerShell `System.Drawing` fallback:
+
+```powershell
+python -m pip install Pillow
+python C:\Users\<you>\.agents\skills\publish-zsxq-article\scripts\prepare_image.py '<resolved_path>'
 ```
 
 Then, for each marker (e.g. `[[IMG_1]]`, `[[IMG_10]]`), run this three-step sequence. Replace both occurrences of `[[IMG_N]]` in command 1 with the real marker string; the length is derived from the string itself, so double- and triple-digit indices work:
@@ -255,6 +286,8 @@ agent-browser wait 500
 # 3. Paste the image
 agent-browser --session-name zsxq eval "$(cat /tmp/zsxq_paste_image.js)"
 ```
+
+If the image paste JS is still large on Windows, do not pass it as a raw command argument. Either reduce the image size further with `--max-size` / `--max-inline-chars`, or run through a shell-safe path that your local `agent-browser` supports.
 
 After each image, verify and give the upload time to resolve:
 
@@ -318,6 +351,8 @@ Confirm the button text flipped, then submit:
 ```bash
 agent-browser --session-name zsxq eval 'document.querySelector(".operation-btns .post.btn")?.textContent?.trim()'
 # Expected: "定时发布". If it still says "发布", re-toggle the schedule switch and re-run the date setter.
+agent-browser --session-name zsxq eval '(() => { const boxes = [...document.querySelectorAll(".scheduled-topic-timer app-topic-timer .time")]; const input = document.querySelector(".scheduled-topic-timer #date.flatpickr-input"); return { date: input?.value, hour: boxes[0]?.childNodes[0]?.textContent?.trim(), minute: boxes[1]?.childNodes[0]?.textContent?.trim() }; })()'
+# Expected hour/minute: 10 and 0. If it selected another hour, click the time box open first, then click the desired li.
 
 agent-browser --session-name zsxq click ".operation-btns .post.btn"
 agent-browser wait 2000

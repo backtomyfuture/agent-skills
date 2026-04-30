@@ -85,6 +85,29 @@ The content was inserted via `fill` or `type` instead of a synthetic paste event
 agent-browser --session-name zsxq eval "$(cat /tmp/zsxq_paste_content.js)"
 ```
 
+On Windows/PowerShell, prefer UTF-8 base64:
+
+```powershell
+$js = Get-Content -Raw -Encoding UTF8 -Path "C:\tmp\zsxq_paste_content.js"
+$b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($js))
+agent-browser --session-name zsxq eval -b $b64
+```
+
+### Chinese text becomes mojibake in the editor
+
+If the editor shows text like `锘`, `绁`, `鎺`, or `馃`, stop before publishing. This usually means the generated JS was fine on disk but was damaged while being passed through a Windows command argument.
+
+Recovery:
+
+1. Reopen the editor URL to get a clean editor. If Zsxq offers to restore the previous draft, click `忽略`.
+2. Re-run `prepare_content.py`; it reads files as `utf-8-sig`, so a UTF-8 BOM will not leak into the body.
+3. Paste via `agent-browser eval -b` with UTF-8 base64 instead of `agent-browser eval "$(cat ...)"`.
+4. Verify with a page eval that the editor text does not contain mojibake hints before inserting images:
+
+   ```javascript
+   /绁|鎺|锘|馃/.test(document.querySelector('.ProseMirror')?.textContent || '')
+   ```
+
 ### Content too long
 
 Zsxq enforces a 100,000-character limit. `prepare_content.py` emits a warning on stderr when the body exceeds this. The skill has no way to split an article for you — ask the user whether to truncate or to split into multiple posts, then re-run.
@@ -102,7 +125,7 @@ This is expected for Notion exports. `prepare_content.py` handles it: it auto-se
 
 ### JS SyntaxError inside `agent-browser eval`
 
-Constructing JS inline in shell makes backticks, `$`, and quotes nearly impossible to get right across all inputs. Always go through `prepare_content.py` or `prepare_image.py` to produce a `.js` file, then `eval "$(cat /tmp/...)"`.
+Constructing JS inline in shell makes backticks, `$`, and quotes nearly impossible to get right across all inputs. Always go through `prepare_content.py` or `prepare_image.py` to produce a `.js` file. On macOS/Linux, `eval "$(cat /tmp/...)"` is usually fine. On Windows, use `agent-browser eval -b` for content JS because raw non-ASCII command arguments can be recoded before they reach the browser.
 
 ---
 
@@ -124,6 +147,37 @@ Almost always caused by merging the marker-deletion and image-paste into one eva
 
 Notion often emits `Article Name/image 1.png` inside the folder it gives you. `prepare_content.py` resolves paths relative to the `.md` file's directory, so this usually works. If `resolved_path` is `null` in the JSON summary, list the actual directory contents with Python (`os.listdir`) to find the image and pass that absolute path to `prepare_image.py` directly.
 
+### Local image links are wrapped in angle brackets
+
+Markdown exporters often emit links like:
+
+```markdown
+![](<./article_media/image.png>)
+```
+
+`prepare_content.py` normalizes the angle brackets before resolving local files. If `resolved_path` is still `null`, check whether the Markdown file was read with the wrong encoding or whether the media directory is beside the temporary copy rather than the original article.
+
+### Windows says "filename or extension is too long" while pasting an image
+
+This means the generated image paste JS was too large to pass as a Windows command-line argument. It happened with phone screenshots that were far below 5 MB but expanded to a very large base64 string.
+
+Recovery:
+
+1. Re-run `prepare_image.py`. On Windows, it now compresses/resizes through Pillow, or through a PowerShell `System.Drawing` fallback if Pillow is not installed.
+2. If both compression paths fail, install Pillow:
+
+   ```powershell
+   python -m pip install Pillow
+   ```
+
+3. If the generated payload is still too large, lower the resize target:
+
+   ```powershell
+   python .\scripts\prepare_image.py '<resolved_path>' --max-size 900 --max-inline-chars 30000
+   ```
+
+Only use `--allow-large-inline` when your local invocation path does not pass the generated JS through the Windows command line.
+
 ### Fallback to system clipboard?
 
 This used to be a supported path. It has been removed. Synthetic `ClipboardEvent` via `prepare_image.py` has been reliable enough that keeping the clipboard fallback only added confusion and a macOS-only dependency.
@@ -144,6 +198,24 @@ If the publish button text didn't change to "定时发布" after setting the dat
 2. flatpickr did not accept the date. Check `input._flatpickr` is truthy in the eval result.
 
 Do not click the button while it still says "发布" — that publishes instantly, which we never want.
+
+### Time picker chose the wrong hour
+
+The hour/minute dropdowns can keep their previous active value unless the list is opened before clicking an item. Before submitting, verify the actual selected date/time:
+
+```javascript
+(() => {
+  const boxes = [...document.querySelectorAll('.scheduled-topic-timer app-topic-timer .time')];
+  const input = document.querySelector('.scheduled-topic-timer #date.flatpickr-input');
+  return {
+    date: input?.value,
+    hour: boxes[0]?.childNodes[0]?.textContent?.trim(),
+    minute: boxes[1]?.childNodes[0]?.textContent?.trim(),
+  };
+})()
+```
+
+If the hour is not `10`, click the hour box first, wait briefly, then click the `li` whose text is `10`.
 
 ---
 

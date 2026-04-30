@@ -24,11 +24,17 @@ import base64
 import io
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Max base64 size to embed inline (5MB decoded ~ 6.7MB base64)
 MAX_INLINE_SIZE = 5 * 1024 * 1024
+
+# Windows process command lines are limited to about 32K characters. The
+# generated JS includes the base64 payload, so keep the default below that.
+WINDOWS_INLINE_BASE64_CHARS = 24_000
 
 # Supported image formats
 SUPPORTED_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff'}
@@ -48,12 +54,113 @@ def get_mime_type(ext: str) -> str:
     return mime_map.get(ext.lower(), 'image/png')
 
 
-def compress_if_needed(image_path: str, max_size: int = 2000) -> bytes:
+def base64_char_count(byte_count: int) -> int:
+    """Return the number of base64 characters needed for byte_count bytes."""
+    return ((byte_count + 2) // 3) * 4
+
+
+def should_compress_for_command_line(
+    base64_chars: int,
+    platform_name: str = os.name,
+    max_inline_chars: int = WINDOWS_INLINE_BASE64_CHARS,
+) -> bool:
+    """Return true when inline JS is likely too large for the shell."""
+    return platform_name == 'nt' and base64_chars > max_inline_chars
+
+
+def compress_with_powershell(image_path: str, max_size: int = 2000) -> bytes:
+    """Resize/compress an image on Windows using built-in System.Drawing."""
+    fd, output_path = tempfile.mkstemp(suffix='.jpg')
+    os.close(fd)
+    os.unlink(output_path)
+
+    ps_script = r'''
+param(
+  [string]$inputPath,
+  [string]$outputPath,
+  [int]$maxSize
+)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+$quality = [int64]75
+$jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+$params = New-Object System.Drawing.Imaging.EncoderParameters(1)
+$params.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, $quality)
+$img = [System.Drawing.Image]::FromFile($inputPath)
+try {
+  $longest = [Math]::Max($img.Width, $img.Height)
+  $scale = [Math]::Min(1.0, $maxSize / $longest)
+  $targetW = [int][Math]::Max(1, [Math]::Round($img.Width * $scale))
+  $targetH = [int][Math]::Max(1, [Math]::Round($img.Height * $scale))
+  $bmp = New-Object System.Drawing.Bitmap($targetW, $targetH)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  try {
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.DrawImage($img, 0, 0, $targetW, $targetH)
+    $bmp.Save($outputPath, $jpegCodec, $params)
+  } finally {
+    $g.Dispose()
+    $bmp.Dispose()
+  }
+} finally {
+  $img.Dispose()
+}
+'''
+    with tempfile.NamedTemporaryFile('w', suffix='.ps1', delete=False, encoding='utf-8') as ps_file:
+        ps_file.write(ps_script)
+        ps_path = ps_file.name
+
+    try:
+        completed = subprocess.run(
+            [
+                'powershell',
+                '-NoProfile',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-File',
+                ps_path,
+                image_path,
+                output_path,
+                str(max_size),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.strip() or completed.stdout.strip())
+        with open(output_path, 'rb') as f:
+            compressed = f.read()
+        if not compressed:
+            raise RuntimeError('PowerShell compression produced an empty file')
+        return compressed
+    finally:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
+        try:
+            os.unlink(ps_path)
+        except OSError:
+            pass
+
+
+def compress_if_needed(
+    image_path: str,
+    max_size: int = 2000,
+    max_inline_chars: int = WINDOWS_INLINE_BASE64_CHARS,
+    allow_large_inline: bool = False,
+) -> bytes:
     """Read image, compress/resize if too large, return bytes."""
     file_size = os.path.getsize(image_path)
+    projected_base64_chars = base64_char_count(file_size)
+    needs_inline_compression = should_compress_for_command_line(
+        projected_base64_chars,
+        max_inline_chars=max_inline_chars,
+    )
 
     # If small enough and is PNG/JPEG, just read raw
-    if file_size <= MAX_INLINE_SIZE:
+    if file_size <= MAX_INLINE_SIZE and not needs_inline_compression:
         with open(image_path, 'rb') as f:
             return f.read()
 
@@ -70,6 +177,23 @@ def compress_if_needed(image_path: str, max_size: int = 2000) -> bytes:
         print(f"Compressed: {file_size} -> {len(compressed)} bytes", file=sys.stderr)
         return compressed
     except ImportError:
+        if os.name == 'nt':
+            try:
+                compressed = compress_with_powershell(image_path, max_size)
+                print(f"Compressed with PowerShell: {file_size} -> {len(compressed)} bytes",
+                      file=sys.stderr)
+                return compressed
+            except Exception as exc:
+                print(f"WARNING: PowerShell image compression failed: {exc}", file=sys.stderr)
+        if needs_inline_compression and not allow_large_inline:
+            print(
+                "ERROR: This image would generate a very large inline JS payload on "
+                "Windows. Install Pillow (`python -m pip install Pillow`) or re-run "
+                "with --allow-large-inline if you will not pass the JS through a "
+                "Windows command line.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print("WARNING: Pillow not installed, using raw image (may be large)", file=sys.stderr)
         with open(image_path, 'rb') as f:
             return f.read()
@@ -111,12 +235,19 @@ def generate_image_paste_js(b64_data: str, filename: str, mime_type: str,
 
 
 def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+
     parser = argparse.ArgumentParser(description='Prepare image for Zsxq editor injection')
     parser.add_argument('path', help='Path to image file')
     parser.add_argument('--output', '-o', default='/tmp/zsxq_paste_image.js',
                         help='Output JS file path (default: /tmp/zsxq_paste_image.js)')
     parser.add_argument('--max-size', type=int, default=2000,
                         help='Max image dimension for compression (default: 2000)')
+    parser.add_argument('--max-inline-chars', type=int, default=WINDOWS_INLINE_BASE64_CHARS,
+                        help='Max base64 chars to inline on Windows before resizing')
+    parser.add_argument('--allow-large-inline', action='store_true',
+                        help='Allow oversized inline JS even when it may exceed shell limits')
     args = parser.parse_args()
 
     # Validate
@@ -132,7 +263,13 @@ def main():
         sys.exit(1)
 
     # Read and possibly compress
-    image_data = compress_if_needed(str(image_path), args.max_size)
+    original_size = os.path.getsize(str(image_path))
+    image_data = compress_if_needed(
+        str(image_path),
+        args.max_size,
+        args.max_inline_chars,
+        args.allow_large_inline,
+    )
     b64_data = base64.b64encode(image_data).decode('ascii')
 
     if len(image_data) > MAX_INLINE_SIZE:
@@ -140,7 +277,8 @@ def main():
               f"Very large base64 may cause issues.", file=sys.stderr)
 
     # Determine mime type (use JPEG if compressed, otherwise original)
-    if os.path.getsize(str(image_path)) > MAX_INLINE_SIZE:
+    was_compressed = len(image_data) != original_size
+    if was_compressed:
         mime_type = 'image/jpeg'  # Was compressed to JPEG
         filename = image_path.stem + '.jpg'
     else:
