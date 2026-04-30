@@ -38,6 +38,15 @@ All scripts live in this skill's `scripts/` directory. Use absolute paths:
 - `/Users/jarod/.agents/skills/publish-mdnice-article/scripts/prepare_title.py` — writes `/tmp/mdnice_fill_title.js` to fill the new-article modal title and click confirm without shell quoting bugs.
 - `/Users/jarod/.agents/skills/publish-mdnice-article/scripts/prepare_image.py` — base64-encodes one image and writes `/tmp/mdnice_paste_image.js`.
 
+## Windows notes
+
+PowerShell 5 and Windows command-line limits need extra care:
+
+- The helper scripts read Markdown as `utf-8-sig` and write JSON as UTF-8, so a UTF-8 BOM will not leak into the article title/body as `锘`.
+- `prepare_content.py` normalizes local image links written as `![](<./media/image.png>)` before resolving files.
+- Do not pass JS containing Chinese text directly as a raw Windows command argument. For content/title paste, use `agent-browser eval -b` with UTF-8 base64.
+- Large images can make `mdnice_paste_image.js` too large for a Windows command line. `prepare_image.py` detects this and compresses through Pillow or a PowerShell `System.Drawing` fallback before writing the paste JS. If both fail, install Pillow with `python -m pip install Pillow`.
+
 ## Workflow
 
 Run these phases in order:
@@ -69,6 +78,12 @@ With profile:
 
 ```bash
 agent-browser --headed true --session-name mdnice --profile ~/.agent-browser/profiles/zsxq/ open "https://editor.mdnice.com/"
+```
+
+Windows profile path:
+
+```powershell
+agent-browser --headed true --session-name mdnice --profile "$env:USERPROFILE\.agent-browser\profiles\zsxq" open "https://editor.mdnice.com/"
 ```
 
 Without profile:
@@ -150,7 +165,16 @@ agent-browser --session-name mdnice eval "$(cat /tmp/mdnice_fill_title.js)"
 agent-browser wait 1000
 ```
 
-The helper tries the exact selectors the user provided first, then falls back to the visible Ant Design modal. If it still fails because Ant Design changed the modal structure, inspect the current page:
+On Windows/PowerShell:
+
+```powershell
+python C:\Users\<you>\.agents\skills\publish-mdnice-article\scripts\prepare_title.py '<TITLE FROM SUMMARY>'
+$js = Get-Content -Raw -Encoding UTF8 -Path "C:\tmp\mdnice_fill_title.js"
+$b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($js))
+agent-browser --session-name mdnice eval -b $b64
+```
+
+The helper prefers the Ant Design input whose placeholder is `请输入标题`, then falls back to an input near `文章标题`, then to older selectors. This avoids filling the folder input by mistake. If it still fails because Ant Design changed the modal structure, inspect the current page:
 
 ```bash
 agent-browser --session-name mdnice eval '(() => {
@@ -168,6 +192,14 @@ Paste via the generated JS file:
 
 ```bash
 agent-browser --session-name mdnice eval "$(cat /tmp/mdnice_paste_content.js)"
+```
+
+On Windows/PowerShell, use UTF-8 base64 to avoid mojibake:
+
+```powershell
+$js = Get-Content -Raw -Encoding UTF8 -Path "C:\tmp\mdnice_paste_content.js"
+$b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($js))
+agent-browser --session-name mdnice eval -b $b64
 ```
 
 Verify content length:
@@ -202,6 +234,18 @@ Prepare each image:
 
 ```bash
 python3 /Users/jarod/.agents/skills/publish-mdnice-article/scripts/prepare_image.py '<resolved_path>'
+```
+
+On Windows, large screenshots are compressed automatically when the base64 payload would exceed the command-line-safe threshold:
+
+```powershell
+python C:\Users\<you>\.agents\skills\publish-mdnice-article\scripts\prepare_image.py '<resolved_path>' --max-size 900
+```
+
+If the script reports that both Pillow and PowerShell compression failed, install Pillow:
+
+```powershell
+python -m pip install Pillow
 ```
 
 Delete the marker and leave the cursor at that position:
@@ -253,6 +297,8 @@ agent-browser wait 500
 agent-browser --session-name mdnice eval "$(cat /tmp/mdnice_paste_image.js)"
 agent-browser wait 3000
 ```
+
+If Windows still rejects the image paste command as too long, lower `--max-size` or `--max-inline-chars` and regenerate the image paste JS.
 
 Verify the marker count is going down:
 
