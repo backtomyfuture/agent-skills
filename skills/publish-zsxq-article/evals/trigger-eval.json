@@ -1,0 +1,82 @@
+[
+  {
+    "query": "把这篇 Notion 笔记发到知识星球：https://www.notion.so/jarod/Weekly-AI-Digest-abc123def456",
+    "should_trigger": true
+  },
+  {
+    "query": "take this notion page https://notion.so/jarod/product-deep-dive-7f2c and post it to zsxq, schedule for tomorrow morning",
+    "should_trigger": true
+  },
+  {
+    "query": "帮我把这条 Notion 链接里的文章发到星球，里面有几张配图都要带上 https://www.notion.so/jarod/Apr-Recap-9a8b7c",
+    "should_trigger": true
+  },
+  {
+    "query": "帮我把 /Users/jarod/Downloads/ai-weekly-0424.md 发到星球，明天 10 点发",
+    "should_trigger": true
+  },
+  {
+    "query": "ok 我这篇 AI 周报写完了，路径在 ~/Documents/notes/2026-04-24-weekly.md，发到知识星球明早定时推送",
+    "should_trigger": true
+  },
+  {
+    "query": "take this markdown file at ~/notes/product-update-q2.md and post it to wx.zsxq under 星球 AI一天, schedule for tomorrow 10am",
+    "should_trigger": true
+  },
+  {
+    "query": "能把 Downloads 里那个长文 markdown 搞到知识星球吗，明天 10 点定时发布",
+    "should_trigger": true
+  },
+  {
+    "query": "publish /Users/jarod/writing/deep-dive.md to zsxq",
+    "should_trigger": true
+  },
+  {
+    "query": "把这篇文章发到我的星球：/tmp/long-article-with-images.md，里面有 12 张配图都要带上",
+    "should_trigger": true
+  },
+  {
+    "query": "Draft this on Zsxq for me — the notion page is https://notion.so/jarod/misc-notes-abc999",
+    "should_trigger": true
+  },
+  {
+    "query": "publish my markdown file to GitHub Pages blog — it's at ~/blog/posts/2026-04-24.md",
+    "should_trigger": false
+  },
+  {
+    "query": "how do I manually format a 知识星球 post? i'll just copy-paste myself",
+    "should_trigger": false
+  },
+  {
+    "query": "帮我在星球里搜索一下上周发过的那个 AI 周报",
+    "should_trigger": false
+  },
+  {
+    "query": "把这个 Notion 笔记转成飞书云文档：https://www.notion.so/jarod/meeting-notes-9f8e7d",
+    "should_trigger": false
+  },
+  {
+    "query": "我想取消明天在知识星球的那个定时发布，怎么操作",
+    "should_trigger": false
+  },
+  {
+    "query": "convert this markdown to a pdf and email it to my colleague",
+    "should_trigger": false
+  },
+  {
+    "query": "把 /Users/jarod/blog.md 发一条朋友圈",
+    "should_trigger": false
+  },
+  {
+    "query": "how does Zsxq's scheduled publish feature actually work under the hood? just curious, no need to actually do anything",
+    "should_trigger": false
+  },
+  {
+    "query": "回复知识星球里那条评论：'感谢分享！' — comment id 123456",
+    "should_trigger": false
+  },
+  {
+    "query": "帮我读一下这个 Notion 页面的内容总结给我：https://www.notion.so/jarod/research-notes-1a2b3c",
+    "should_trigger": false
+  }
+]

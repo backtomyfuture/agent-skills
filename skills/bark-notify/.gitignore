@@ -1,0 +1,9 @@
+# Secret configuration — never commit real keys
+.env
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

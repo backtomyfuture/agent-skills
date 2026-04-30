@@ -1,0 +1,116 @@
+{
+  "skill_name": "publish-zsxq-article",
+  "evals": [
+    {
+      "id": 1,
+      "name": "simple-local-markdown",
+      "prompt": "帮我把这个 Markdown 文件发到知识星球，明天 10 点定时发布：/tmp/zsxq-eval/simple-article.md。",
+      "expected_output": "Skill runs Pre-flight + Content + Publish pipelines (no image pipeline, no intermediate save-as-draft step). Scheduled publish is set for tomorrow 10:00 and the button text is verified as 定时发布 before being clicked. Skill reports back with confirmation including the scheduled date.",
+      "files": ["/tmp/zsxq-eval/simple-article.md"],
+      "assertions": [
+        {
+          "id": "preflight-close-all-ran",
+          "text": "The skill ran `agent-browser close --all` exactly once at the start, before any other agent-browser command."
+        },
+        {
+          "id": "used-prepare-content-script",
+          "text": "The skill invoked scripts/prepare_content.py with the source Markdown path single-quoted, rather than constructing Markdown-paste JS inline."
+        },
+        {
+          "id": "switched-to-markdown-mode",
+          "text": "The skill verified `.ProseMirror` is present in the DOM before attempting to paste content (confirming Markdown mode)."
+        },
+        {
+          "id": "content-pasted-via-eval-file",
+          "text": "The skill pasted body content via `eval \"$(cat /tmp/zsxq_paste_content.js)\"`, not via `fill` or `type`."
+        },
+        {
+          "id": "no-image-pipeline-ran",
+          "text": "Because the input has no images, the skill did not run any marker-deletion or image-paste commands."
+        },
+        {
+          "id": "no-intermediate-save-draft",
+          "text": "The skill did NOT click `保存` or navigate to 我的文章 before scheduling. Scheduling itself is the save, so an intermediate draft-save step would be redundant and must not occur."
+        },
+        {
+          "id": "scheduled-publish-set",
+          "text": "The skill enabled the schedule switch, set the date to tomorrow and the time to 10:00, verified the publish button text changed to 定时发布, and clicked it."
+        },
+        {
+          "id": "never-clicked-instant-publish",
+          "text": "The skill never clicked `.operation-btns .post.btn` while its text was 发布."
+        },
+        {
+          "id": "final-report-includes-scheduled-date",
+          "text": "The skill's final message to the user mentions the scheduled date (tomorrow's date) and 10:00."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "notion-url-with-images",
+      "prompt": "从这篇 Notion 笔记发到知识星球：https://www.notion.so/jarod/Weekly-AI-Digest-abc123def456。里面应该有几张配图，记得都带上。",
+      "expected_output": "Skill calls notion-fetch on the URL, writes the extracted Markdown body to a scratch file under /tmp/zsxq-notion/, runs notion_ingest.py to download all remote images locally, then continues with prepare_content.py on /tmp/zsxq-notion/article.md. Image positions in the final Zsxq post match their positions in the Notion source. Scheduled for tomorrow 10:00.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "notion-fetch-called",
+          "text": "The skill called the notion-fetch MCP tool with the user-provided Notion URL before doing any browser work."
+        },
+        {
+          "id": "notion-ingest-ran",
+          "text": "The skill ran scripts/notion_ingest.py with the Notion-fetched Markdown and an output directory under /tmp/."
+        },
+        {
+          "id": "images-downloaded-locally",
+          "text": "Each image referenced in the Notion page exists as a local file in the notion_ingest output directory after the ingest step."
+        },
+        {
+          "id": "image-positions-preserved",
+          "text": "The image order in the final Zsxq post matches the image order in the Notion source exactly (first image in Notion = first image in Zsxq post, etc.)."
+        },
+        {
+          "id": "prepare-content-on-localized-md",
+          "text": "The skill ran scripts/prepare_content.py on the article.md produced by notion_ingest.py (not on the raw Notion response)."
+        },
+        {
+          "id": "image-pipeline-ran-per-image",
+          "text": "The three-command image-insertion sequence (marker delete / wait 500 / paste) ran once per image, in order."
+        },
+        {
+          "id": "image-commands-separated",
+          "text": "For each image the marker-deletion eval, the `agent-browser wait 500`, and the paste-image eval were three separate commands — not combined into a single eval."
+        },
+        {
+          "id": "no-intermediate-save-draft",
+          "text": "The skill did NOT click `保存` before scheduling. Only the scheduled-publish flow was used."
+        },
+        {
+          "id": "scheduled-publish-set",
+          "text": "The skill enabled the schedule switch, set tomorrow 10:00, verified the button text is 定时发布, and clicked it."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "notion-url-with-expired-signed-images",
+      "prompt": "把这篇 Notion 文章发到星球：https://www.notion.so/jarod/Long-Article-xyz789。（测试场景：其中一张图片的 Notion signed URL 已过期，会下载失败。）",
+      "expected_output": "notion_ingest.py reports failed_count > 0 in its JSON summary. The skill stops, surfaces the failure to the user, and asks whether to re-fetch the Notion page (to get fresh signed URLs) or proceed with the missing image skipped. Does not silently publish a post with broken image references.",
+      "files": [],
+      "assertions": [
+        {
+          "id": "failure-detected",
+          "text": "The skill inspected the JSON summary from notion_ingest.py and noticed failed_count > 0 rather than proceeding blindly."
+        },
+        {
+          "id": "asks-user-how-to-proceed",
+          "text": "On detecting failed downloads, the skill surfaced the issue to the user and asked whether to re-fetch the Notion page or to skip the missing image(s) — rather than silently publishing a post with broken references."
+        },
+        {
+          "id": "no-silent-instant-publish",
+          "text": "The skill did not click the publish button while recovering from the image failure. Whatever path is taken, scheduled publish remains the only submit."
+        }
+      ]
+    }
+  ]
+}

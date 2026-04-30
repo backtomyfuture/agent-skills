@@ -1,0 +1,41 @@
+{
+  "skill_name": "notion-to-md",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我把这个 Notion 页面导出成 Markdown：https://www.notion.so/acme/Weekly-Sync-1234567890abcdef1234567890abcdef。输出到 docs/weekly-sync.md，图片下载到 docs/media，并把 Markdown 里的资源路径改成 /media/文件名。不要把 token 写进代码里。",
+      "expected_output": "Uses notion-to-md with file export plus media download, keeps the token in NOTION_TOKEN, and reports the markdown path plus media directory.",
+      "files": [],
+      "expectations": [
+        "Uses notion-to-md instead of a hand-written block renderer",
+        "Keeps the Notion token in an environment variable",
+        "Configures media downloading and rewrites paths with transformPath",
+        "Produces a markdown file path and a media directory path"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "我的 pnpm 项目里要加一个 scripts/export-notion.mjs，传 pageId 和 output path 就能把 Notion 页面导出成 md 文件。请沿用现有 Node 风格，依赖用 notion-to-md v4 方案。",
+      "expected_output": "Adds a reusable script that matches project conventions and exports a page to markdown using notion-to-md and @notionhq/client.",
+      "files": [],
+      "expectations": [
+        "Reuses the repo's package manager and existing style",
+        "Installs or references notion-to-md@alpha and @notionhq/client",
+        "Creates a reusable script or CLI rather than a one-off snippet",
+        "Writes markdown to a file via DefaultExporter or equivalent notion-to-md workflow"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "给我一个最小可运行的命令行方案，把 Notion 页面 URL 转成 Markdown 直接打印到 stdout，我要接到别的 shell pipeline 里。尽量少废话，但要提醒我前置条件。",
+      "expected_output": "Provides a minimal stdout-oriented notion-to-md flow that avoids noisy stdout logging and mentions integration prerequisites.",
+      "files": [],
+      "expectations": [
+        "Accepts a Notion page URL and extracts the page id",
+        "Prints markdown to stdout without extra non-markdown output",
+        "Mentions the Notion integration, token, and page sharing prerequisites",
+        "Uses notion-to-md basic conversion flow"
+      ]
+    }
+  ]
+}
