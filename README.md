@@ -1,6 +1,10 @@
 # Agent Skills
 
-Personal source repository for agent skills maintained by `backtomyfuture`.
+Personal agent skills collection maintained by `backtomyfuture`.
+
+This repository is meant to be consumed through the open agent skills ecosystem.
+Use the Skills CLI to install the skills you need; the examples here intentionally
+use only `npx skills add`.
 
 Each directory under `skills/` is a standalone skill:
 
@@ -8,15 +12,30 @@ Each directory under `skills/` is a standalone skill:
 - `bark-notify` - send Bark push notifications.
 - `publish-zsxq-article` - publish or schedule Markdown/Notion articles to Zsxq.
 
+## Install
+
+Install one skill globally:
+
+```bash
+npx skills add backtomyfuture/agent-skills@notion-to-md -g -y
+```
+
+Install the current skills:
+
+```bash
+npx skills add backtomyfuture/agent-skills@notion-to-md -g -y
+npx skills add backtomyfuture/agent-skills@bark-notify -g -y
+npx skills add backtomyfuture/agent-skills@publish-zsxq-article -g -y
+```
+
 ## Layout
 
 ```text
 agent-skills/
-├── skills/
-│   ├── notion-to-md/
-│   ├── bark-notify/
-│   └── publish-zsxq-article/
-└── scripts/
+└── skills/
+    ├── notion-to-md/
+    ├── bark-notify/
+    └── publish-zsxq-article/
 ```
 
 Each skill keeps its own `SKILL.md` plus optional `scripts/`, `references/`,
@@ -26,29 +45,6 @@ Each skill keeps its own `SKILL.md` plus optional `scripts/`, `references/`,
 
 1. Create `skills/<skill-name>/`.
 2. Add `skills/<skill-name>/SKILL.md` with `name` and `description` frontmatter.
-3. Put deterministic helpers in `scripts/` and longer docs in `references/`.
-4. Run `python3 scripts/check_skills.py`.
-
-## Install Locally
-
-Install or refresh all skills into `~/.agents/skills`:
-
-```bash
-scripts/install_local.sh
-```
-
-Install one skill:
-
-```bash
-scripts/install_local.sh notion-to-md
-```
-
-The installer creates symlinks from this repository into `~/.agents/skills`.
-If an existing installed skill is a normal directory, it is moved to a timestamped
-backup before the symlink is created.
-
-## Validate
-
-```bash
-python3 scripts/check_skills.py
-```
+3. Put deterministic helpers in the skill's own `scripts/` folder and longer docs
+   in `references/`.
+4. Install it with `npx skills add backtomyfuture/agent-skills@<skill-name> -g -y`.
