@@ -1,0 +1,17 @@
+{
+  "skill_name": "publish-mdnice-article",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "把 /tmp/demo.md 发布到 Markdown Nice",
+      "expected_output": "Uses the publish-mdnice-article workflow, opens editor.mdnice.com, creates a new article, fills the title, pastes content into #nice-md-editor, processes images, and relies on autosave.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "将这个 Notion 页面导入 mdnice：https://www.notion.so/example/article-id",
+      "expected_output": "Fetches or requests accessible Notion Markdown, localizes images, creates a Markdown Nice article, inserts content and images, and does not publish or manually save.",
+      "files": []
+    }
+  ]
+}

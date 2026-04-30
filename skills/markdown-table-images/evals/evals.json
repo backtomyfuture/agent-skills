@@ -1,0 +1,45 @@
+{
+  "skill_name": "markdown-table-images",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "把 zsxq-export/AI-OpenClaw.fixed.md 里超过阈值的 Markdown 表格转成 PNG，并输出一个新的可发布 Markdown 文件，原文件不要覆盖。",
+      "expected_output": "生成新的 Markdown 文件、本地表格 PNG 图片目录，并在 Markdown 中用图片链接替换符合阈值的表格；图片默认使用 publication 主题，而不是原始 spreadsheet 风格。",
+      "files": [
+        "zsxq-export/AI-OpenClaw.fixed.md"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "我要发今日头条，小表格也可能炸。请把 input.md 中所有 2 列以上的 Markdown 表格都转成图片，并保留图片在原文位置。",
+      "expected_output": "使用低阈值转换几乎所有表格，输出 Markdown 中的图片位置与原表格位置一致。",
+      "files": [
+        "input.md"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "只把文章里的大型对比表和总结表转成图，普通两行小表格继续保留 Markdown。",
+      "expected_output": "使用较高阈值，只替换行列数或单元格数量较大的表格，小表格保持原样。",
+      "files": [
+        "article.md"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "把包含 🗂️、📣、👨‍👩‍👧 这类 emoji 图标的 Markdown 表格转成 PNG，不能渲染成缺字方框。",
+      "expected_output": "生成的表格 PNG 中 emoji 使用 emoji 字体 fallback 渲染，不出现方框占位符。",
+      "files": [
+        "emoji-table.md"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "这篇文章要发公众号和今日头条，帮我把总结表转成更适合发布的图片，不要像 Excel 截图那样生硬。",
+      "expected_output": "使用 publication 主题输出更适合文章发布的表格图：深色表头、弱网格线、紧凑字号、短列居中、图片四周有留白。",
+      "files": [
+        "summary-table.md"
+      ]
+    }
+  ]
+}

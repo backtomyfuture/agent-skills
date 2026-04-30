@@ -1,0 +1,23 @@
+{
+  "skill_name": "publish-xiaohongshu-article",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "把 /Users/jarod/Downloads/notion文章导出/小红书测试文章.md 发布到小红书，先填好草稿让我确认，不要直接发布。",
+      "expected_output": "触发 publish-xiaohongshu-article，运行 prepare_note.py，使用 xiaohongshu-skills 的 fill-publish 或 long-article 预览流程，不执行登录命令，不使用 MCP，并明确未点击最终发布。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "这个 Notion 链接里的文章帮我发小红书，图片要保持在本地并上传，话题加 AI 和 效率工具。",
+      "expected_output": "先获取 Notion Markdown，运行 notion_ingest.py 本地化图片，再用 prepare_note.py 添加话题并进入 xiaohongshu-skills CLI 发布预览流程；如未登录则要求用户自行用浏览器/agent-browser 登录后继续。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "帮我把这篇长 Markdown 变成小红书长文发布，不要截断正文。",
+      "expected_output": "识别正文超过普通笔记长度，选择 long_article 流程或要求确认长文模式，不静默截断内容。",
+      "files": []
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "skill_name": "lark-minutes-base-sync",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我想把 iPhone 上随手录的飞书妙记当成 agent inbox，帮我同步新妙记到 Base，外部我会自己高频调用。",
+      "expected_output": "应使用 lark-minutes-base-sync，只调用默认脚本，不安装定时任务，不做历史回填；默认只同步手工创建、iPhone 新录音或手工上传的妙记，跳过视频会议自动生成的妙记；新记录应同步元数据、AI总结、待办、章节和逐字稿。",
+      "files": [],
+      "expectations": [
+        "说明应运行 scripts/sync_minutes.py 的默认命令，而不是安装或改写外部调度器。",
+        "说明第一次无状态文件只初始化基线，不做历史回填。",
+        "说明默认 manual 模式只同步手工创建、iPhone 录音或手工上传的新妙记。",
+        "说明新记录会写入 Base 元数据、妙记链接、AI总结、待办、章节和逐字稿。"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "高频跑这个妙记同步脚本会不会很耗？帮我确认它不会每次都拉所有妙记内容。",
+      "expected_output": "应说明脚本按状态文件做增量时间窗口查询，只对新 token 调用 vc +notes，已存在 token 会跳过，不同步参与/可见但非本人拥有的妙记。",
+      "files": [],
+      "expectations": [
+        "说明状态文件和重叠窗口用于增量查询。",
+        "说明只调用 minutes +search --owner-ids me，不查 participant-ids。",
+        "说明已存在 token 会跳过。",
+        "说明只对新入库 token 调用 vc +notes。"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "我刚录了一个 20 秒的新录音，帮我确认同步会不会跳过短录音。",
+      "expected_output": "应说明本 skill 不排除短录音，只要是傅强拥有、在新窗口内、token 未入表，就会写入 Base，状态为已捕获。",
+      "files": [],
+      "expectations": [
+        "明确说明短录音不会因为时长短而被排除。",
+        "说明写入前仍需满足傅强拥有、在增量窗口内、token 未入表。",
+        "说明富内容同步成功后同步状态为已捕获。"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "帮我检查妙记链接不要再显示成裸 URL，以后全量回填和新增同步都按好看的飞书链接模式写入。",
+      "expected_output": "应说明妙记链接字段必须用原生 Base API 写成 {text: 会议名称, link: 妙记URL} 的超链接对象；不要用 base +record-upsert 直接写字符串；必要时批量修复现有记录并验证原始 API 值为 {text, link}。",
+      "files": [],
+      "expectations": [
+        "说明妙记链接字段应写为 {text, link} 原生超链接对象。",
+        "说明不要用 base +record-upsert 直接写妙记链接字符串。",
+        "说明新增记录先 upsert 普通字段，再用原生 Base API 更新链接字段。",
+        "说明 CLI 显示 Markdown 链接不等同于原始 API 值异常。"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "我的目标是随身信息入口，后续默认只同步手工创建的妙记，不要把视频会议自动生成的妙记放进 Base。",
+      "expected_output": "应说明默认脚本已经使用 manual 来源模式：先查傅强拥有的新妙记，再按日期用 vc +search 和 vc +recording 识别并跳过视频会议自动生成的 minute_token；只有显式传 --source-mode all 才包含视频会议自动妙记。",
+      "files": [],
+      "expectations": [
+        "说明默认 --source-mode manual。",
+        "说明视频会议自动妙记通过 vc +search 和 vc +recording 反查 minute_token 识别。",
+        "说明命中视频会议录制 minute_token 时会跳过。",
+        "说明只有显式 --source-mode all 才包含视频会议自动妙记。"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "如果 minutes +search 返回的新妙记没有开始时间，脚本应该先跳过还是继续写入？我不想把视频会议妙记误同步进 inbox。",
+      "expected_output": "应说明 manual 模式下不能判定来源时应失败并等待下次重试，而不是跳过或继续写入；错误通常是 cannot determine source，需要检查 meta_data.description 的开始时间，不能用 --source-mode all 绕过，除非用户明确要同步视频会议自动妙记。",
+      "files": [],
+      "expectations": [
+        "说明无法解析开始日期时 manual 模式必须失败。",
+        "说明失败是为了避免把来源不明或视频会议自动妙记误写入 Base。",
+        "说明下次外部调度可重试，不能静默跳过造成状态推进。",
+        "说明不要用 --source-mode all 绕过，除非用户明确要包含视频会议自动妙记。"
+      ]
+    }
+  ]
+}
