@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = [
+#   "chinese-calendar",
+# ]
+# ///
 import argparse
 import json
 import sys
@@ -60,7 +66,7 @@ def load_env():
 
 def require_chinese_calendar():
     if is_workday is None or is_holiday is None or get_holiday_detail is None:
-        raise RuntimeError("缺少依赖 chinese_calendar，请先安装：python3 -m pip install chinese-calendar")
+        raise RuntimeError("缺少依赖 chinese_calendar，请用 uv run 执行本脚本以自动加载 chinese-calendar")
 
 
 def display_holiday_name(holiday_name):

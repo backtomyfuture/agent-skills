@@ -24,14 +24,14 @@ WECOM_USER_ID=你的企业微信UserId
 
 如果 `.env` 不存在或配置不完整，提示用户创建并填写。
 如果只运行 `--check-workday-only`，或 `--workday-only` 判断为非工作日并跳过查询，则不需要企业微信配置。
-如果缺少工作日判断依赖，先安装：`python3 -m pip install chinese-calendar`。
+依赖由脚本内的 `uv` metadata 声明；默认用 `uv run` 执行，不要把 `chinese-calendar` 安装到系统 Python。
 
 ## 使用方式
 
 运行skill目录下的Python脚本来查询打卡记录：
 
 ```bash
-python3 <skill-dir>/scripts/check_attendance.py [--date YYYY-MM-DD] [--range YYYY-MM-DD YYYY-MM-DD] [--workday-only] [--check-workday-only]
+uv run <skill-dir>/scripts/check_attendance.py [--date YYYY-MM-DD] [--range YYYY-MM-DD YYYY-MM-DD] [--workday-only] [--check-workday-only]
 ```
 
 参数说明：
