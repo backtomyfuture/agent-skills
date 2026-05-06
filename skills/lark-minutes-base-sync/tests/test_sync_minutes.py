@@ -3,6 +3,7 @@ import contextlib
 import io
 import pathlib
 import sys
+import tempfile
 import unittest
 
 
@@ -35,6 +36,18 @@ class SyncMinutesTests(unittest.TestCase):
         self.assertEqual(parsed.start_time, "2026-04-20 16:24:52")
         self.assertEqual(parsed.duration_text, "25分16秒")
         self.assertEqual(parsed.token, "obcn5uxbbes5r6glhu5b69t1")
+        self.assertEqual(parsed.url, "https://a1qr0odzabr.feishu.cn/minutes/obcn5uxbbes5r6glhu5b69t1")
+
+    def test_parse_search_item_builds_link_when_app_link_missing(self):
+        item = {
+            "display_info": "新录音\n\n所有者: 傅强 开始时间: 2026.04.30 15:31:24 时长: 23 秒",
+            "meta_data": {"description": "所有者: 傅强 开始时间: 2026.04.30 15:31:24 时长: 23 秒"},
+            "token": "obcn_missing_link",
+        }
+
+        parsed = sync_minutes.parse_search_item(item)
+
+        self.assertEqual(parsed.url, "https://a1qr0odzabr.feishu.cn/minutes/obcn_missing_link")
 
     def test_initial_state_does_not_backfill(self):
         now_ms = 1777449600000
@@ -91,19 +104,74 @@ class SyncMinutesTests(unittest.TestCase):
         self.assertNotIn("关键词", payload)
         self.assertNotIn("来源关系", payload)
 
-    def test_build_link_payload_uses_title_as_display_text(self):
+    def test_build_name_link_payload_uses_meeting_name_field(self):
         minute = sync_minutes.MinuteRecord(
             token="obcn1",
             title="新录音",
             url="https://example.feishu.cn/minutes/obcn1",
         )
 
-        payload = sync_minutes.build_link_payload(minute)
+        payload = sync_minutes.build_name_link_payload(minute)
 
         self.assertEqual(
-            payload["妙记链接"],
+            payload["会议名称"],
             {"text": "新录音", "link": "https://example.feishu.cn/minutes/obcn1"},
         )
+
+    def test_update_record_name_link_writes_meeting_name_field(self):
+        calls = []
+        original_run_lark = sync_minutes.run_lark
+        minute = sync_minutes.MinuteRecord(
+            token="obcn1",
+            title="新录音",
+            url="https://example.feishu.cn/minutes/obcn1",
+        )
+
+        def fake_run_lark(cmd, cwd=None):
+            calls.append(cmd)
+            return {"code": 0}
+
+        try:
+            sync_minutes.run_lark = fake_run_lark
+            sync_minutes.update_record_name_link("base", "table", "rec1", minute)
+        finally:
+            sync_minutes.run_lark = original_run_lark
+
+        self.assertEqual(calls[0][:3], ["api", "PUT", "/open-apis/bitable/v1/apps/base/tables/table/records/rec1"])
+        self.assertIn('"会议名称"', calls[0][calls[0].index("--data") + 1])
+        self.assertNotIn("妙记链接", calls[0][calls[0].index("--data") + 1])
+
+    def test_create_record_accepts_multiple_response_shapes(self):
+        calls = []
+        original_run_lark = sync_minutes.run_lark
+
+        def fake_run_lark(cmd, cwd=None):
+            calls.append(cmd)
+            return {"data": {"record_id": "rec_from_data"}}
+
+        try:
+            sync_minutes.run_lark = fake_run_lark
+            record_id = sync_minutes.create_record("base", "table", {"会议名称": "新录音"})
+        finally:
+            sync_minutes.run_lark = original_run_lark
+
+        self.assertEqual(record_id, "rec_from_data")
+        self.assertEqual(calls[0][:2], ["base", "+record-upsert"])
+
+    def test_record_ids_by_token_reads_record_search_ids(self):
+        original_run_lark = sync_minutes.run_lark
+
+        def fake_run_lark(cmd, cwd=None):
+            self.assertEqual(cmd[:2], ["base", "+record-search"])
+            return {"data": {"record_id_list": ["rec1"]}}
+
+        try:
+            sync_minutes.run_lark = fake_run_lark
+            record_ids = sync_minutes.record_ids_by_token("base", "table", "obcn1")
+        finally:
+            sync_minutes.run_lark = original_run_lark
+
+        self.assertEqual(record_ids, ["rec1"])
 
     def test_source_mode_defaults_to_manual(self):
         args = sync_minutes.build_parser().parse_args([])
@@ -176,25 +244,33 @@ class SyncMinutesTests(unittest.TestCase):
         with self.assertRaises(sync_minutes.SourceClassificationError):
             sync_minutes.is_video_meeting_minute(minute, {})
 
-    def test_extract_rich_content_handles_artifacts_and_transcript_file(self):
-        payload = {
-            "data": {
-                "artifacts": {
-                    "summary": {"text": "摘要"},
-                    "todos": [{"text": "跟进事项"}],
-                    "chapters": [{"title": "第一章", "summary_content": "要点"}],
-                    "transcript_file": "minutes/obcn1/transcript.txt",
-                }
-            }
-        }
+    def test_fetch_rich_content_downloads_transcript_directly(self):
+        calls = []
+        original_run_lark = sync_minutes.run_lark
 
-        rich = sync_minutes.extract_rich_content(payload, read_file=lambda path: f"read:{path}")
+        def fake_run_lark(cmd, cwd=None):
+            calls.append(cmd)
+            self.assertEqual(cmd[:3], ["api", "GET", "/open-apis/minutes/v1/minutes/obcn1/transcript"])
+            output_path = pathlib.Path(cmd[cmd.index("--output") + 1])
+            target = pathlib.Path(cwd) / output_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("完整转写", encoding="utf-8")
+            return {"content_type": "text/plain", "saved_path": str(target), "size_bytes": 12}
 
-        self.assertEqual(rich.summary, "摘要")
-        self.assertEqual(rich.todos, "跟进事项")
-        self.assertIn("第一章", rich.chapters)
-        self.assertIn("要点", rich.chapters)
-        self.assertEqual(rich.transcript, "read:minutes/obcn1/transcript.txt")
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                sync_minutes.run_lark = fake_run_lark
+                rich = sync_minutes.fetch_rich_content("obcn1", pathlib.Path(tmp) / "transcripts")
+            finally:
+                sync_minutes.run_lark = original_run_lark
+
+        self.assertEqual(rich.summary, "")
+        self.assertEqual(rich.todos, "")
+        self.assertEqual(rich.chapters, "")
+        self.assertEqual(rich.transcript, "完整转写")
+        self.assertEqual(rich.status, "已捕获")
+        self.assertEqual(len(calls), 1)
+        self.assertNotEqual(calls[0][:2], ["vc", "+notes"])
 
     def test_runtime_has_no_subcommands(self):
         args = sync_minutes.build_parser().parse_args([])

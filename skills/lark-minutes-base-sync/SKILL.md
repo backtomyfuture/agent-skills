@@ -1,6 +1,6 @@
 ---
 name: lark-minutes-base-sync
-description: "把飞书妙记作为随身信息入口同步到飞书多维表格 inbox。用户提到飞书妙记、iPhone 录音、手工上传音频、随身信息入口、agent inbox、新妙记同步到 Base、外部定时器高频调用、同步脚本排障、妙记链接字段修复、状态文件或来源过滤时必须使用本 skill。默认只同步傅强手工创建/上传/录音的新妙记，跳过视频会议自动生成的妙记；不做历史回填，短录音也捕获；新记录会同步妙记链接、AI总结、待办、章节和逐字稿，让后续 agent 主要消费 Base。"
+description: "把飞书妙记作为随身信息入口同步到飞书多维表格 inbox。用户提到飞书妙记、iPhone 录音、手工上传音频、随身信息入口、agent inbox、新妙记同步到 Base、外部定时器高频调用、同步脚本排障、状态文件或来源过滤时必须使用本 skill。默认只同步傅强手工创建/上传/录音的新妙记，跳过视频会议自动生成的妙记；不做历史回填，短录音也捕获；新记录把首列 `会议名称` 写成妙记链接，并只从飞书同步逐字稿，AI总结、待办和章节由 Base 或后续 agent 基于逐字稿生成。"
 metadata:
   requires:
     bins: ["lark-cli", "python3"]
@@ -8,7 +8,7 @@ metadata:
 
 # 飞书妙记 Capture
 
-这个 skill 把飞书妙记当成随身信息入口：iPhone 录音或手工上传进入飞书妙记，脚本把新妙记的元数据、AI 产物和逐字稿写入 Base。后续 agent 应优先消费 Base 里的内容，只有补救或排障时才回到原始妙记链接。
+这个 skill 把飞书妙记当成随身信息入口：iPhone 录音或手工上传进入飞书妙记，脚本把新妙记的元数据和逐字稿写入 Base。首列 `会议名称` 是 Base 原生超链接对象，显示文字用妙记标题，链接指向妙记 URL。飞书自己的 AI artifacts（总结、待办、章节）不作为同步来源；后续由 Base 或 agent 基于 `转写内容` 生成 `AI总结`、`待办事项` 和 `章节要点`。
 
 固定目标：
 
@@ -21,6 +21,12 @@ metadata:
 ## 运行命令
 
 外部调度器或手动调用时只运行这一条：
+
+```bash
+python3 /Users/jarod/.agents/skills/lark-minutes-base-sync/scripts/sync_minutes.py
+```
+
+在 Hermes Agent 的 terminal/cron 工具上下文中，`lark-cli` 会检测 `HERMES_*` 环境变量并尝试切到未绑定的 `hermes` workspace，可能报 `hermes context detected but lark-cli not bound to hermes workspace`、`not configured` 或 `FEISHU_APP_ID not found in ~/.hermes/.env`。脚本的 `run_lark()` 已内置清理所有 `HERMES_*` 环境变量，确保使用本机已有的 local lark-cli 配置；如需手动排查，也可直接运行：
 
 ```bash
 python3 /Users/jarod/.agents/skills/lark-minutes-base-sync/scripts/sync_minutes.py
@@ -49,42 +55,43 @@ python3 /Users/jarod/.agents/skills/lark-minutes-base-sync/scripts/sync_minutes.
 - 不排除短录音。
 - 不做历史回填。第一次运行没有状态文件时，只初始化基线并退出。
 - 高频运行时只查上次检查时间附近的新窗口；默认向前重叠 10 分钟，避免处理延迟导致漏捕获。
-- 只对新入库 token 调用 `vc +notes`，拉取 AI 总结、待办、章节和逐字稿；已存在 token 会跳过，不重复拉取大文本。
+- 只对新入库 token 调用 `/open-apis/minutes/v1/minutes/<minute_token>/transcript` 下载逐字稿；不调用 `vc +notes`，也不读取飞书 artifacts。
+- 已存在 token 会跳过，不重复拉取大文本。
 
 ## 写入字段
 
 脚本只写存储字段；`最后同步时间` 是 Base 的更新时间系统字段，由飞书自动维护：
 
 - `妙记Token`
-- `会议名称`
-- `AI总结`
-- `待办事项`
-- `章节要点`
+- `会议名称`：Base 原生超链接对象，显示文字用妙记标题，链接用妙记 URL
+- `AI总结`：同步脚本不写，由 Base 或后续 agent 基于逐字稿生成
+- `待办事项`：同步脚本不写，由 Base 或后续 agent 基于逐字稿生成
+- `章节要点`：同步脚本不写，由 Base 或后续 agent 基于逐字稿生成
 - `转写内容`
 - `组织者`
 - `会议日期`
 - `会议时长`
-- `同步状态`：富内容同步成功写 `已捕获`；`vc +notes` 拉取失败时写 `处理失败`
+- `同步状态`：逐字稿同步成功写 `已捕获`；逐字稿拉取失败时写 `处理失败`
 
 ## 妙记链接写入规则
 
-`妙记链接` 字段必须保持 Base 原生超链接对象形态，显示文字用 `会议名称`，链接用妙记 URL：
+不再维护单独的 `妙记链接` 字段。`会议名称` 字段必须保持 URL 样式文本，并直接写 Base 原生超链接对象：
 
 ```json
-{"妙记链接":{"text":"会议名称","link":"https://.../minutes/<minute_token>"}}
+{"会议名称":{"text":"会议名称","link":"https://.../minutes/<minute_token>"}}
 ```
 
-不要用 `base +record-upsert` 直接写 `妙记链接` 字符串；shortcut 会把值降级成裸 URL 或 Markdown 链接。脚本应先用 `base +record-upsert` 创建普通字段，再用原生 Base API 单独更新链接字段：
+终端里 `base +record-list` 可能显示为 `[会议名称](URL)`，这是 CLI 的 Markdown 展示；原始 API 值应是 `{text, link}`。
+
+`base +record-upsert` / `base +record-batch-update` 不支持直接写 `{text, link}` 形态的 URL 对象。脚本应先用 `base +record-upsert` 创建普通存储字段，再用原生记录更新接口单独把 `会议名称` 更新为超链接对象：
 
 ```bash
 lark-cli api PUT /open-apis/bitable/v1/apps/<base_token>/tables/<table_id>/records/<record_id> \
-  --data '{"fields":{"妙记链接":{"text":"会议名称","link":"https://.../minutes/<minute_token>"}}}' \
+  --data '{"fields":{"会议名称":{"text":"会议名称","link":"https://.../minutes/<minute_token>"}}}' \
   --as user
 ```
 
-全量回填、历史修复和未来新增记录都按这个模式处理。终端里 `base +record-list` 可能仍显示为 `[会议名称](URL)`，这是 CLI 的 Markdown 展示；原始 API 值应是 `{text, link}`。
-
-后续 agent 处理阶段应优先读取 Base 中的 `AI总结`、`待办事项`、`章节要点`、`转写内容`，并更新 `同步状态`。
+后续 agent 处理阶段应优先读取 Base 中的 `转写内容`，生成或更新 `AI总结`、`待办事项`、`章节要点`，并更新 `同步状态`。
 
 ## 验证
 
@@ -98,7 +105,7 @@ python3 /Users/jarod/.agents/skills/lark-minutes-base-sync/scripts/sync_minutes.
 
 ## 故障处理
 
-如果 `minutes +search`、`vc +search`、`vc +recording`、`vc +notes` 或 Base 写入返回 `missing_scope`，按 `lark-cli` 输出的 hint 做增量授权。不要切到 bot 身份；这个入口读取的是用户自己的妙记、用户可见的视频会议记录和用户可访问的 Base。
+如果 `minutes +search`、`vc +search`、`vc +recording`、`api GET /open-apis/minutes/v1/minutes/<minute_token>/transcript` 或 Base 写入返回 `missing_scope`，按 `lark-cli` 输出的 hint 做增量授权。不要切到 bot 身份；这个入口读取的是用户自己的妙记、用户可见的视频会议记录和用户可访问的 Base。
 
 来源判定失败时不要静默同步；保持脚本失败并让外部调度下次重试，避免把视频会议自动妙记误写进随身信息入口。
 

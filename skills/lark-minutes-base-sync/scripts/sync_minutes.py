@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import html
 import json
+import os
 import re
 import subprocess
 import sys
@@ -20,10 +21,11 @@ DEFAULT_TABLE_ID = "tbloqAEhgMnSXMi8"
 DEFAULT_OWNER_IDS = "me"
 DEFAULT_OWNER_NAME = "傅强"
 DEFAULT_STATE_FILE = Path.home() / ".lark-minutes-base-sync" / "state.json"
-DEFAULT_ARTIFACT_DIR = Path.home() / ".lark-minutes-base-sync" / "artifacts"
+DEFAULT_TRANSCRIPT_DIR = Path.home() / ".lark-minutes-base-sync" / "transcripts"
 DEFAULT_OVERLAP_MINUTES = 10
+DEFAULT_MINUTES_URL_PREFIX = "https://a1qr0odzabr.feishu.cn/minutes"
 TOKEN_FIELD = "妙记Token"
-LINK_FIELD = "妙记链接"
+NAME_FIELD = "会议名称"
 SOURCE_MODE_MANUAL = "manual"
 SOURCE_MODE_ALL = "all"
 
@@ -43,7 +45,7 @@ class MinuteRecord:
 @dataclass
 class RichContent:
     summary: str = ""
-    todos: str = "无"
+    todos: str = ""
     chapters: str = ""
     transcript: str = ""
     status: str = "已捕获"
@@ -60,6 +62,15 @@ class SourceClassificationError(RuntimeError):
     """Raised when manual-mode filtering cannot safely classify a minute source."""
 
 
+def lark_env() -> dict[str, str]:
+    """Run lark-cli against the local CLI profile, not the Hermes workspace."""
+    env = dict(os.environ)
+    for key in list(env):
+        if key.startswith("HERMES_"):
+            env.pop(key, None)
+    return env
+
+
 def run_lark(args: list[str], cwd: Path | None = None) -> dict[str, Any]:
     proc = subprocess.run(
         ["lark-cli", *args],
@@ -67,6 +78,7 @@ def run_lark(args: list[str], cwd: Path | None = None) -> dict[str, Any]:
         text=True,
         capture_output=True,
         check=False,
+        env=lark_env(),
     )
     raw = proc.stdout.strip() or proc.stderr.strip()
     try:
@@ -88,12 +100,20 @@ def parse_search_item(item: dict[str, Any]) -> MinuteRecord:
     return MinuteRecord(
         token=str(item.get("token") or ""),
         title=title,
-        url=str(item.get("meta_data", {}).get("app_link") or ""),
+        url=minute_url(str(item.get("token") or ""), str(item.get("meta_data", {}).get("app_link") or "")),
         owner_name=owner_name,
         start_time=start_time,
         duration_text=duration_text,
         create_time_ms=parse_local_time_ms(start_time),
     )
+
+
+def minute_url(token: str, app_link: str = "") -> str:
+    if app_link:
+        return app_link
+    if not token:
+        return ""
+    return f"{DEFAULT_MINUTES_URL_PREFIX}/{token}"
 
 
 def parse_description(desc: str) -> tuple[str, str, str]:
@@ -263,7 +283,7 @@ def is_video_meeting_minute(minute: MinuteRecord, day_token_cache: dict[str, set
     return minute.token in day_token_cache[day]
 
 
-def token_exists(base_token: str, table_id: str, token: str) -> bool:
+def record_ids_by_token(base_token: str, table_id: str, token: str) -> list[str]:
     payload = run_lark(
         [
             "base",
@@ -287,14 +307,18 @@ def token_exists(base_token: str, table_id: str, token: str) -> bool:
             "user",
         ]
     )
-    return bool(payload.get("data", {}).get("record_id_list"))
+    return [str(record_id) for record_id in payload.get("data", {}).get("record_id_list") or [] if record_id]
+
+
+def token_exists(base_token: str, table_id: str, token: str) -> bool:
+    return bool(record_ids_by_token(base_token, table_id, token))
 
 
 def build_record_payload(minute: MinuteRecord, rich: RichContent | None = None) -> dict[str, Any]:
     rich = rich or RichContent()
     payload: dict[str, Any] = {
         TOKEN_FIELD: minute.token,
-        "会议名称": minute.title,
+        NAME_FIELD: minute.title,
         "组织者": minute.owner_name or DEFAULT_OWNER_NAME,
         "会议日期": minute.start_time,
         "会议时长": minute.duration_text,
@@ -307,63 +331,38 @@ def build_record_payload(minute: MinuteRecord, rich: RichContent | None = None) 
     return {key: value for key, value in payload.items() if value not in ("", None, [])}
 
 
-def build_link_payload(minute: MinuteRecord) -> dict[str, Any]:
-    return {LINK_FIELD: {"text": minute.title or minute.url, "link": minute.url}}
+def build_name_link_payload(minute: MinuteRecord) -> dict[str, dict[str, str]]:
+    return {NAME_FIELD: {"text": minute.title or minute.url, "link": minute.url}}
 
 
-def fetch_rich_content(token: str, artifact_dir: Path) -> RichContent:
-    cli_cwd = artifact_dir.parent
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+def transcript_filename(token: str) -> str:
+    safe_token = re.sub(r"[^A-Za-z0-9_-]+", "_", token).strip("_")
+    return f"transcript-{safe_token or 'minute'}.txt"
+
+
+def fetch_rich_content(token: str, transcript_dir: Path) -> RichContent:
+    cli_cwd = transcript_dir.parent
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    relative_output = Path(transcript_dir.name) / transcript_filename(token) if transcript_dir.name else Path(
+        transcript_filename(token)
+    )
     try:
         payload = run_lark(
-            ["vc", "+notes", "--minute-tokens", token, "--format", "json", "--output-dir", artifact_dir.name, "--as", "user"],
+            [
+                "api",
+                "GET",
+                f"/open-apis/minutes/v1/minutes/{token}/transcript",
+                "--output",
+                str(relative_output),
+                "--as",
+                "user",
+            ],
             cwd=cli_cwd,
         )
     except LarkCommandError:
         return RichContent(status="处理失败")
-    return extract_rich_content(payload, read_file=lambda path: read_transcript_file(cli_cwd, path))
-
-
-def extract_rich_content(payload: dict[str, Any], read_file) -> RichContent:
-    artifacts = find_artifacts(payload)
-    transcript_file = artifacts.get("transcript_file")
-    transcript = read_file(transcript_file) if transcript_file else ""
-    return RichContent(
-        summary=stringify_artifact(artifacts.get("summary")),
-        todos=stringify_artifact(artifacts.get("todos")) or "无",
-        chapters=stringify_artifact(artifacts.get("chapters")),
-        transcript=transcript,
-    )
-
-
-def find_artifacts(payload: dict[str, Any]) -> dict[str, Any]:
-    data = payload.get("data") or {}
-    if isinstance(data.get("artifacts"), dict):
-        return data["artifacts"]
-    notes = data.get("notes") or []
-    for note in notes:
-        if isinstance(note, dict) and isinstance(note.get("artifacts"), dict):
-            return note["artifacts"]
-    for value in data.values():
-        if isinstance(value, dict) and isinstance(value.get("artifacts"), dict):
-            return value["artifacts"]
-    return {}
-
-
-def stringify_artifact(value: Any) -> str:
-    if value in (None, "", []):
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return "\n".join(part for part in (stringify_artifact(item) for item in value) if part)
-    if isinstance(value, dict):
-        preferred = []
-        for key in ("title", "text", "content", "summary_content", "summary", "todo", "name"):
-            if isinstance(value.get(key), str) and value[key].strip():
-                preferred.append(value[key].strip())
-        return "\n".join(preferred) if preferred else json.dumps(value, ensure_ascii=False, indent=2)
-    return str(value)
+    transcript_path = str(payload.get("saved_path") or relative_output)
+    return RichContent(transcript=read_transcript_file(cli_cwd, transcript_path))
 
 
 def read_transcript_file(base_dir: Path, path_value: str) -> str:
@@ -390,11 +389,22 @@ def create_record(base_token: str, table_id: str, payload: dict[str, Any]) -> st
             "user",
         ]
     )
-    record = result.get("data", {}).get("record", {})
-    return str(record.get("record_id") or record.get("id") or "")
+    data = result.get("data", {})
+    record = data.get("record", {}) if isinstance(data.get("record"), dict) else {}
+    records = data.get("records") if isinstance(data.get("records"), list) else []
+    first_record = records[0] if records and isinstance(records[0], dict) else {}
+    return str(
+        record.get("record_id")
+        or record.get("id")
+        or data.get("record_id")
+        or data.get("id")
+        or first_record.get("record_id")
+        or first_record.get("id")
+        or ""
+    )
 
 
-def update_record_link(base_token: str, table_id: str, record_id: str, minute: MinuteRecord) -> None:
+def update_record_name_link(base_token: str, table_id: str, record_id: str, minute: MinuteRecord) -> None:
     if not record_id or not minute.url:
         return
     run_lark(
@@ -403,7 +413,7 @@ def update_record_link(base_token: str, table_id: str, record_id: str, minute: M
             "PUT",
             f"/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/records/{record_id}",
             "--data",
-            json.dumps({"fields": build_link_payload(minute)}, ensure_ascii=False),
+            json.dumps({"fields": build_name_link_payload(minute)}, ensure_ascii=False),
             "--as",
             "user",
         ]
@@ -426,6 +436,7 @@ def run_capture(args: argparse.Namespace) -> int:
     skipped_video_meetings = 0
     planned: list[dict[str, Any]] = []
     video_tokens_by_day: dict[str, set[str]] = {}
+    transcript_dir = args.artifact_dir or args.transcript_dir
 
     for item in search_items:
         minute = parse_search_item(item)
@@ -444,10 +455,13 @@ def run_capture(args: argparse.Namespace) -> int:
         if args.dry_run:
             planned.append({TOKEN_FIELD: minute.token, "会议名称": minute.title, "会议日期": minute.start_time})
         else:
-            rich = fetch_rich_content(minute.token, args.artifact_dir)
+            rich = fetch_rich_content(minute.token, transcript_dir)
             payload = build_record_payload(minute, rich)
             record_id = create_record(args.base_token, args.table_id, payload)
-            update_record_link(args.base_token, args.table_id, record_id, minute)
+            if not record_id:
+                record_ids = record_ids_by_token(args.base_token, args.table_id, minute.token)
+                record_id = record_ids[0] if record_ids else ""
+            update_record_name_link(args.base_token, args.table_id, record_id, minute)
         captured += 1
 
     state["last_checked_at_ms"] = current_ms
@@ -473,7 +487,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--owner-ids", default=DEFAULT_OWNER_IDS)
     parser.add_argument("--owner-name", default=DEFAULT_OWNER_NAME)
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE_FILE)
-    parser.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR)
+    parser.add_argument("--transcript-dir", type=Path, default=DEFAULT_TRANSCRIPT_DIR)
+    parser.add_argument("--artifact-dir", type=Path, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--overlap-minutes", type=int, default=DEFAULT_OVERLAP_MINUTES)
     parser.add_argument(
         "--source-mode",
