@@ -1,0 +1,31 @@
+{
+  "skill_name": "format-platform-article",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "把 notion-to-md 导出的 article.md 和 media 文件夹整理成一个微信公众号优先的多平台发布包，先不要自动复制或发布。",
+      "expected_output": "生成 publish 包目录，包含 wechat.html、preview.html、copy.html、platforms/zhihu.md、platforms/toutiao.md、platforms/zsxq.md、platforms/smzdm.md、assets/ 和 report.json。",
+      "files": [
+        "article.md",
+        "media/"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "这篇 Markdown 里有表格和图片，要发公众号、知乎和今日头条，请把高风险表格处理成更稳的发布形态并输出兼容报告。",
+      "expected_output": "使用默认 table-mode auto 生成发布包，表格转换结果写入 report.json，平台 Markdown 使用相对图片路径并保留图片位置。",
+      "files": [
+        "comparison.md",
+        "media/"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "我只想检查文章能不能安全发布，不想覆盖已有输出目录。",
+      "expected_output": "如果输出目录已存在则停止并说明需要 --overwrite；如果使用 --strict，远程图片、风险 HTML 等兼容警告会让命令失败。",
+      "files": [
+        "article.md"
+      ]
+    }
+  ]
+}
