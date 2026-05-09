@@ -10,6 +10,7 @@ Each directory under `skills/` is a standalone skill:
 
 - `bark-notify` - send Bark push notifications.
 - `exchange-cli` - operate Exchange/Outlook mail, calendar, tasks, and contacts.
+- `format-platform-article` - format local Markdown/media into a WeChat-first multi-platform publish package.
 - `lark-minutes-base-sync` - sync owned Feishu Minutes into a Base inbox.
 - `markdown-table-images` - render publication-risky Markdown tables as PNG images.
 - `monthly-attendance` - fill monthly attendance spreadsheets from OA, Notion, and leave records.
@@ -36,6 +37,7 @@ Install the current skills:
 ```bash
 npx skills add backtomyfuture/agent-skills@bark-notify -g -y
 npx skills add backtomyfuture/agent-skills@exchange-cli -g -y
+npx skills add backtomyfuture/agent-skills@format-platform-article -g -y
 npx skills add backtomyfuture/agent-skills@lark-minutes-base-sync -g -y
 npx skills add backtomyfuture/agent-skills@markdown-table-images -g -y
 npx skills add backtomyfuture/agent-skills@monthly-attendance -g -y
@@ -57,6 +59,7 @@ agent-skills/
 └── skills/
     ├── bark-notify/
     ├── exchange-cli/
+    ├── format-platform-article/
     ├── lark-minutes-base-sync/
     ├── markdown-table-images/
     ├── monthly-attendance/

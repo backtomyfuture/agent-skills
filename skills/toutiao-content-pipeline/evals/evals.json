@@ -1,0 +1,35 @@
+{
+  "skill_name": "toutiao-content-pipeline",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "今天帮我自动搜集 AI Agent 方向的热门信息，自主选一个最值得写的选题，做一篇今日头条图文，先暂存在编辑器不要直接发布。",
+      "expected_output": "触发 toutiao-content-pipeline；自主从当前热门/多源信息中建立候选池，排序并自动选择一个低风险高价值选题；输出 brief 和自动选题理由；生成带图片位置规划的图文草稿；用 create_toutiao_visuals.py 生成至少 3 张视觉卡片并渲染为 PNG；Review Gate 通过后用 prepare_toutiao_payload.py 生成 title/body/payload；进入 mp.toutiao.com 图文编辑器并以 staged_autosaved/等待人工确认结束，不点击最终发布。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "参考这几个链接写 3 条微头条，处理好格式后发到头条号草稿箱，信源不够的地方要标注。",
+      "expected_output": "按链接建立 brief，区分已确认事实和信息缺口，生成 3 条独立微头条，分别用 weitoutiao 模式格式化，进入微头条编辑器草稿/预览流程，保留信源和风险备注。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "把 /Users/jarod/Downloads/article.md 这篇 Markdown 发布到今日头条文章，图片要处理，不需要搜新闻。",
+      "expected_output": "跳过新闻搜集，直接进入格式化和发布阶段；提取 H1 标题、解析本地图片为 IMG marker，检查缺失图片，进入头条图文编辑器并默认草稿优先。若用户没有明确要求立即发布，不点击最终发布。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "帮我把这篇 2500 字长文填到头条号编辑器，确认正文完整，不要发布。浏览器 snapshot 可能看不全。",
+      "expected_output": "使用当前 snapshot refs 的 @eXX 形式，contenteditable 编辑器 click 后立即 keyboard inserttext；不使用 agent-browser evaluate；不用错误的 screenshot 参数；长正文验证要抽样开篇、中段、结尾或参考来源，并把状态写成 staged_autosaved 而不是声称已点击保存草稿。",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "这次不要我选题，你自己看今天科技圈什么热，写一篇适合今日头条的图文，图片也要有。",
+      "expected_output": "默认自主选题而不是询问角度；使用热点来源和 web search 建候选池；选择后说明为什么选它；生成头条格式的标题、短段落、小标题、参考来源；必须包含封面/正文视觉素材，不允许纯文字长文。",
+      "files": []
+    }
+  ]
+}

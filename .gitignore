@@ -13,6 +13,7 @@ dist/
 build/
 tmp/
 temp/
+.superpowers/
 
 # Local export/output folders created while testing skills.
 output/
