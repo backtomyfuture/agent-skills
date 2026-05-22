@@ -17,6 +17,7 @@ Each directory under `skills/` is a standalone skill:
 - `notion-file-uploader` - upload local files directly to Notion pages.
 - `notion-to-email` - convert Notion pages into Outlook-ready HTML/EML email.
 - `notion-to-md` - export Notion pages to Markdown and local media.
+- `openrouter-paid-ai-index` - build a paid AI inference trend index from OpenRouter rankings and pricing.
 - `publish-mdnice-article` - import Markdown/Notion articles into Markdown Nice drafts.
 - `publish-xiaohongshu-article` - stage Markdown/Notion articles for Xiaohongshu.
 - `publish-zsxq-article` - publish or schedule Markdown/Notion articles to Zsxq.
@@ -44,6 +45,7 @@ npx skills add backtomyfuture/agent-skills@monthly-attendance -g -y
 npx skills add backtomyfuture/agent-skills@notion-file-uploader -g -y
 npx skills add backtomyfuture/agent-skills@notion-to-email -g -y
 npx skills add backtomyfuture/agent-skills@notion-to-md -g -y
+npx skills add backtomyfuture/agent-skills@openrouter-paid-ai-index -g -y
 npx skills add backtomyfuture/agent-skills@publish-mdnice-article -g -y
 npx skills add backtomyfuture/agent-skills@publish-xiaohongshu-article -g -y
 npx skills add backtomyfuture/agent-skills@publish-zsxq-article -g -y
@@ -66,6 +68,7 @@ agent-skills/
     ├── notion-file-uploader/
     ├── notion-to-email/
     ├── notion-to-md/
+    ├── openrouter-paid-ai-index/
     ├── publish-mdnice-article/
     ├── publish-xiaohongshu-article/
     ├── publish-zsxq-article/
