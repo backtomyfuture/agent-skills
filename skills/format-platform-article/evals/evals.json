@@ -4,7 +4,7 @@
     {
       "id": 1,
       "prompt": "把 notion-to-md 导出的 article.md 和 media 文件夹整理成一个微信公众号优先的多平台发布包，先不要自动复制或发布。",
-      "expected_output": "生成 publish 包目录，包含 wechat.html、preview.html、copy.html、platforms/zhihu.md、platforms/toutiao.md、platforms/zsxq.md、platforms/smzdm.md、assets/ 和 report.json。",
+      "expected_output": "生成 publish 包目录，包含 wechat.html、platforms/zhihu.html、platforms/toutiao.html、platforms/zsxq.html、platforms/smzdm.html、assets/、report.json；如果文章有本地图片，还要生成 image-manifest.md 作为手工补图顺序清单。微信主 HTML 使用公众号专栏风的内联样式：H2 是黑色正文标题加暖色左竖线，不做圆角胶囊；H3 用紧凑深色标题带；引用/提示块用暖色浅底和左侧强调线；Markdown 分割线要渲染成弱化的可复制真实字符分隔，避免装饰性三点分隔。微信/头条/知识星球/什么值得买主 HTML 默认把本地图片内嵌为 Base64；知乎不使用 Base64，只有上传接口或 --remote-image-map 成功时才写 HTTPS 图片，否则 zhihu.html 显示清晰占位符。",
       "files": [
         "article.md",
         "media/"
@@ -13,7 +13,7 @@
     {
       "id": 2,
       "prompt": "这篇 Markdown 里有表格和图片，要发公众号、知乎和今日头条，请把高风险表格处理成更稳的发布形态并输出兼容报告。",
-      "expected_output": "使用默认 table-mode auto 生成发布包，表格转换结果写入 report.json，平台 Markdown 使用相对图片路径并保留图片位置。",
+      "expected_output": "使用默认 table-mode auto 生成发布包，表格转换结果写入 report.json；各平台 HTML 保留正文顺序和图片位置。被转成 PNG 的表格要使用干净白底、深色表头和细边框，不要在图片下方重复输出由最近 H2 生成的胶囊图注。头条、知识星球、什么值得买主 HTML 可内嵌 Base64 图片；知乎必须优先走知乎图片接口或 HTTPS 远程图映射，不能把 Base64 当成功路径。如果知乎图片未上传，report.json 应提示 zhihu_image_upload_required，用户按 image-manifest.md 从 assets/ 手工补传。",
       "files": [
         "comparison.md",
         "media/"
@@ -22,9 +22,27 @@
     {
       "id": 3,
       "prompt": "我只想检查文章能不能安全发布，不想覆盖已有输出目录。",
-      "expected_output": "如果输出目录已存在则停止并说明需要 --overwrite；如果使用 --strict，远程图片、风险 HTML 等兼容警告会让命令失败。",
+      "expected_output": "如果输出目录已存在则停止并说明需要 --overwrite；如果使用 --strict，远程图片、风险 HTML 等兼容警告会让命令失败。不要为了检查模式自动删除或覆盖既有 publish 目录。",
       "files": [
         "article.md"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "把这篇教程型 Markdown 做成公众号和知乎都能直接复制粘贴的版本，正文不要帮我加标题、导语或路线说明。",
+      "expected_output": "wechat.html 和 platforms/zhihu.html 都只包含源 Markdown 作者写出的正文，不注入可见 H1、平台说明、阅读路线、reading time、先说价值、先说结论或阅读方式。wechat.html 应保留微信专属的左竖线 H2、深色 H3 和引用/提示块视觉，不依赖外部 CSS；不要把 H2 做成圆角胶囊或图片说明。知乎文件不应包含 Base64 图片；有可用 Cookie/API 或远程映射时应包含 HTTPS 图片，否则应给出明确图片占位符和 image-manifest.md，而不是假装可直接粘贴图片。",
+      "files": [
+        "tutorial.md",
+        "media/"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "微信公众号版本已经通过，继续把同一篇文章定制成知乎、今日头条、知识星球、什么值得买各自更适合粘贴的版本。",
+      "expected_output": "保留公众号输出，同时生成四个平台的富文本 HTML。每个平台的正文都是 body-only 粘贴内容：标题由平台标题框单独填写，正文不出现注入的 H1 或平台包装头。知乎使用原生 blockquote、pre/code、显式编号，并且图片必须来自 HTTPS 上传/映射或显示占位符；今日头条可使用原生 blockquote、pre/code、显式编号和 Base64 图片；知识星球使用 h2/h3、pre/code、ul、img、a、strong、显式编号和 Base64 图片，并避免 table、hr、caption、wrapper 和依赖会被清洗的 style；SMZDM 不再生成可见标题栏或“粘贴版”说明。",
+      "files": [
+        "tutorial.md",
+        "media/"
       ]
     }
   ]
