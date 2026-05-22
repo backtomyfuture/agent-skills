@@ -4,23 +4,155 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
+import mimetypes
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import unquote
 
 
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*$")
+HR_RE = re.compile(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$")
+UNORDERED_LIST_RE = re.compile(r"^\s{0,3}[-*+]\s+(.+?)\s*$")
+ORDERED_LIST_RE = re.compile(r"^\s{0,3}\d+[.)]\s+(.+?)\s*$")
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 RAW_HTML_RISK_RE = re.compile(r"<\s*(script|style|iframe|object|embed)\b|class\s*=", re.IGNORECASE)
 REMOTE_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 LARGE_IMAGE_BYTES = 2 * 1024 * 1024
 PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm")
+RICH_HTML_PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm")
+PLATFORM_PROFILES: dict[str, dict[str, object]] = {
+    "zhihu": {
+        "label": "知乎",
+        "recommended": "platforms/zhihu.html",
+        "fallback": "assets/ + image-manifest.md",
+        "html_image_mode": "placeholder",
+        "editor_model": "文章富文本编辑器，支持标题、加粗、引用、列表、代码块、图片、链接等常见原生结构，但会清洗复杂 HTML/CSS。",
+        "image_strategy": "知乎专栏实测会拒收 Base64 图片并提示“图片导入失败，请重新上传”。zhihu.html 只有在 --zhihu-cookie-file 自动上传成功或 --remote-image-map 提供 HTTPS 图片 URL 后才内嵌真实图片；否则使用明确占位符，并按 image-manifest.md 从 assets/ 手工补传。",
+        "code_strategy": "代码块保留为原生 pre/code，不使用公众号占位符徽章，避免知乎转换时剥离 span 后变形。",
+        "notes": [
+            "标题在知乎文章标题框单独填写；zhihu.html 只负责正文，不带 H1、包装头或平台说明文字。",
+            "保持段落、加粗、链接、图片、引用和代码块为原生编辑器结构，避免 CSS-heavy 样式、表格和分隔线。",
+            "不要对知乎输出 Base64 图片；优先通过知乎图片接口上传为 zhimg HTTPS URL。",
+            "不要把 Markdown 原文直接当首选粘贴；优先从 zhihu.html 复制富文本，再检查引用块、代码块和图片。",
+            "远程图片必须是 HTTPS URL；可用 --zhihu-cookie-file 触发自动上传到知乎自家图床。",
+        ],
+        "sources": [
+            {
+                "label": "知乎知+自选创作宝典",
+                "url": "https://zhstatic.zhihu.com/org/zixuan-2020.pdf",
+            },
+            {
+                "label": "Vditor 多平台复制能力",
+                "url": "https://b3log.org/vditor/",
+            },
+            {
+                "label": "Makedown 知乎 Markdown 兼容说明",
+                "url": "https://addons.mozilla.org/en-GB/firefox/addon/makedown/",
+            },
+        ],
+    },
+    "toutiao": {
+        "label": "今日头条",
+        "recommended": "platforms/toutiao.html",
+        "fallback": "assets/ + image-manifest.md",
+        "html_image_mode": "data",
+        "editor_model": "头条号图文富文本编辑器，电脑端入口为“主页 - 创作 - 图文”。",
+        "image_strategy": "复制 toutiao.html 的富文本结构，图片已用 Base64 内嵌；若平台拒绝内嵌图片，再按 image-manifest.md 从 assets/ 兜底上传。",
+        "code_strategy": "代码块保留为原生 pre/code，不加外层样式和语言标签，避免头条编辑器清洗后把配置压成一行。",
+        "notes": [
+            "标题在头条号图文编辑器的标题框单独填写；toutiao.html 只负责正文，不带 H1、包装头或平台说明文字。",
+            "平台支持图文发布、文章链接和扩展链接，但外链/内链建议发布前在编辑器里单独复核。",
+            "减少复杂表格和深层样式；头条支持原生引用，重点段落保留为 blockquote；预算类小表格转成清单，长配置优先保留代码块而不是压成一行。",
+        ],
+        "sources": [
+            {
+                "label": "头条创作者帮助中心 - 图文创作",
+                "url": "https://baike.toutiao.com/detail/211/212/214",
+            },
+        ],
+    },
+    "zsxq": {
+        "label": "知识星球",
+        "recommended": "platforms/zsxq.html",
+        "fallback": "assets/ + image-manifest.md",
+        "html_image_mode": "data",
+        "editor_model": "网页端长文章，官方说明支持 100000 字符、图文混排、超链接和一些 Markdown 语法。",
+        "image_strategy": "复制 zsxq.html 的富文本结构，图片已用 Base64 内嵌；若平台拒绝内嵌图片，再按 image-manifest.md 从 assets/ 兜底上传。",
+        "code_strategy": "代码块转为浅色 pre/code 富文本，避免 Markdown 粘贴后观感过于朴素。",
+        "notes": [
+            "长文走网页版“长文章”，不要用 App 主题流承载长教程。",
+            "优先用 zsxq.html 获得更好的段落、标题、视觉引用和代码块观感；如果图片被清洗，再按 image-manifest.md 从 assets/ 手工补传。",
+            "如果链接被吞或样式异常，改用完整裸链接或编辑器内插入超链接。",
+        ],
+        "sources": [
+            {
+                "label": "知识星球常见问题 - 发布长文章",
+                "url": "https://doc.zsxq.com/faq/faqs.html",
+            },
+        ],
+    },
+    "smzdm": {
+        "label": "什么值得买",
+        "recommended": "platforms/smzdm.html",
+        "fallback": "assets/ + image-manifest.md",
+        "html_image_mode": "data",
+        "editor_model": "原创投稿富文本编辑器，强调头图、H2/H3、商品/文章卡片、引用、链接和图片。",
+        "image_strategy": "复制 smzdm.html 的富文本结构，图片已用 Base64 内嵌；若平台拒绝内嵌图片，再按 image-manifest.md 从 assets/ 兜底上传。商品链接发布前改成编辑器内“插入卡片”。",
+        "code_strategy": "保留代码块，但什么值得买不偏代码阅读，复杂配置前后加解释，避免整篇像文档。",
+        "notes": [
+            "H2/H3 只用于真正层级，不要当加粗使用；商品购买链接必须优先改成卡片。",
+            "评测/晒物类内容至少准备清晰头图和多张正文图，发布前补分类、标签和商品链接。",
+        ],
+        "sources": [
+            {
+                "label": "什么值得买文章投稿规范",
+                "url": "https://post.smzdm.com/about",
+            },
+            {
+                "label": "什么值得买官方账号投稿指引",
+                "url": "https://www.toutiao.com/zixun/7543077851290601518/",
+            },
+        ],
+    },
+}
+CALLOUT_MARKERS = {
+    "⚠️": ("注意", "#fff7ed", "#f59e0b", "#9a3412"),
+    "💡": ("提示", "#fff7ed", "#f59e0b", "#9a3412"),
+    "✅": ("完成", "#f8fafc", "#111827", "#111827"),
+    "🎯": ("重点", "#fffbeb", "#d97706", "#78350f"),
+}
+CODE_PLACEHOLDERS = {
+    "UUID": "UUID",
+    "SNI": "SNI",
+    "PUBLIC-KEY": "PUBLIC-KEY",
+    "SHORT-ID": "SHORT-ID",
+    "备注": "备注",
+    "服务器IP": "服务器IP",
+    "你的服务器IP": "服务器IP",
+    "你的UUID": "UUID",
+    "你的PUBLIC-KEY": "PUBLIC-KEY",
+    "你的SHORT-ID": "SHORT-ID",
+}
+CODE_PLACEHOLDER_STYLE = (
+    "display:inline-block;margin:0 1px;padding:0 3px;border-radius:4px;"
+    "background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-weight:700;"
+    "font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;"
+    "font-size:0.92em;line-height:1.35;white-space:nowrap;"
+)
+ZSXQ_SPACER = "<p><br></p>"
+ZSXQ_QUOTE_MARKER = "▍"
+# Image-caption paragraphs look like "*▼ caption*" or "▼ caption" — they sit just below
+# an image and describe it. Detect them so they get pill-style caption styling instead of
+# leaking raw asterisks into the rendered output.
+IMAGE_CAPTION_RE = re.compile(r"^\*?\s*([▼▲►◀↓↑→←▷◁])\s+(.+?)\s*\*?$")
 
 
 def warning(code: str, message: str, **extra: object) -> dict[str, object]:
@@ -125,33 +257,871 @@ def detect_raw_html_warnings(markdown: str) -> list[dict[str, object]]:
 
 def markdown_inline_to_html(text: str) -> str:
     escaped = html.escape(text)
-    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
-    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
     escaped = re.sub(
-        r"\[([^\]]+)\]\(([^)]+)\)",
-        r'<a href="\2" style="color:#8a5a20;text-decoration:underline;">\1</a>',
+        r"`([^`]+)`",
+        r'<code style="font-size:0.92em;background:#f1f5f9;color:#0f172a;border-radius:4px;padding:2px 5px;">\1</code>',
         escaped,
     )
+    escaped = re.sub(
+        r"\*\*([^*]+)\*\*",
+        r'<span style="color:#1a1a1a;font-weight:700;">\1</span>',
+        escaped,
+    )
+    # Italic: single * not adjacent to other * or word chars (avoids tripping on **bold** leftovers).
+    escaped = re.sub(
+        r"(?<![*\w])\*([^*\n]+?)\*(?![*\w])",
+        r'<em style="color:#5a5a5a;font-style:italic;">\1</em>',
+        escaped,
+    )
+    escaped = re.sub(
+        r"\[([^\]]+)\]\(([^)]+)\)",
+        r'<a href="\2" style="color:#b45309;text-decoration:underline;text-underline-offset:3px;">\1</a>',
+        escaped,
+    )
+    label_colon_re = re.compile(r'(<span style="[^"]+font-weight:700;?[^"]*">)([^<]+)(</span>)\s*([：:])\s*')
+
+    def keep_label_colon_together(match: re.Match[str]) -> str:
+        suffix = "&nbsp;" if match.end() < len(escaped) else ""
+        return f"{match.group(1)}{match.group(2)}{match.group(4)}{match.group(3)}{suffix}"
+
+    escaped = label_colon_re.sub(keep_label_colon_together, escaped)
     return escaped
 
 
-def render_blocks(markdown: str) -> str:
+def markdown_inline_to_editor_html(text: str) -> str:
+    """Render only conservative inline markup for non-WeChat rich-text editors."""
+    escaped = html.escape(text)
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    # Italic via single * — must run after **bold** so the lookbehind/lookahead
+    # have something concrete to skip past. Editors that strip <em> degrade
+    # gracefully to plain text, which is still better than leaking raw `*`.
+    escaped = re.sub(r"(?<![*\w])\*([^*\n]+?)\*(?![*\w])", r"<em>\1</em>", escaped)
+    escaped = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', escaped)
+    label_colon_re = re.compile(r"(<strong>)([^<]+)(</strong>)\s*([：:])\s*")
+
+    def keep_label_colon_together(match: re.Match[str]) -> str:
+        suffix = "&nbsp;" if match.end() < len(escaped) else ""
+        return f"{match.group(1)}{match.group(2)}{match.group(4)}{match.group(3)}{suffix}"
+
+    escaped = label_colon_re.sub(keep_label_colon_together, escaped)
+    return escaped
+
+
+def strip_caption_wrapper(text: str) -> tuple[str, str] | None:
+    """If `text` is an image-caption paragraph like '*▼ caption*', return
+    (arrow, caption_body). Otherwise return None.
+
+    Used by every platform renderer so we don't ship raw markdown asterisks
+    into Zhihu / Toutiao / Zsxq / SMZDM HTML where they look like a typo.
+    """
+    match = IMAGE_CAPTION_RE.match(text.strip())
+    if not match:
+        return None
+    return match.group(1), match.group(2).strip()
+
+
+def render_editor_image_caption(text: str) -> str:
+    """A safe centered, italic, small caption for non-WeChat rich text editors.
+
+    These editors aggressively strip CSS, so we use a plain centered <p>
+    with <em> rather than the WeChat-style pill. The arrow stays inline so
+    the reader still gets the visual cue pointing at the image above.
+    """
+    parsed = strip_caption_wrapper(text)
+    if not parsed:
+        return ""
+    arrow, body = parsed
+    inner = markdown_inline_to_editor_html(body)
+    return (
+        '<p style="text-align:center;color:#6b7280;font-size:14px;margin:0 0 18px;">'
+        f"<em>{html.escape(arrow)} {inner}</em>"
+        "</p>"
+    )
+
+
+def extract_outline(markdown: str, limit: int = 6) -> list[str]:
+    headings: list[str] = []
+    in_code = False
+    for line in markdown.splitlines():
+        if line.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        match = HEADING_RE.match(line)
+        if match and len(match.group(1)) == 2:
+            headings.append(strip_inline_markdown(match.group(2)))
+            if len(headings) >= limit:
+                break
+    return headings
+
+
+def estimate_reading_minutes(markdown: str) -> int:
+    plain = re.sub(r"```.*?```", "", markdown, flags=re.DOTALL)
+    plain = IMAGE_RE.sub("", plain)
+    plain = re.sub(r"[#>*_`|\-\[\]()]|https?://\S+", " ", plain)
+    chinese_chars = re.findall(r"[\u4e00-\u9fff]", plain)
+    latin_words = re.findall(r"[A-Za-z0-9_+-]+", plain)
+    units = len(chinese_chars) + len(latin_words)
+    return max(1, round(units / 500))
+
+
+def split_table_row(line: str) -> list[str]:
+    value = line.strip()
+    if value.startswith("|"):
+        value = value[1:]
+    if value.endswith("|"):
+        value = value[:-1]
+    return [cell.strip() for cell in value.split("|")]
+
+
+def is_table_start(lines: list[str], index: int) -> bool:
+    return index + 1 < len(lines) and "|" in lines[index] and TABLE_SEPARATOR_RE.match(lines[index + 1]) is not None
+
+
+def render_table(table_lines: list[str]) -> str:
+    rows = [split_table_row(line) for line in table_lines]
+    if len(rows) < 2:
+        return ""
+    header = rows[0]
+    body = rows[2:]
+    header_cells = "".join(
+        '<th style="padding:10px 11px;border:1px solid #111827;background:#111827;'
+        'color:#ffffff;font-size:14px;line-height:1.5;text-align:left;font-weight:700;">'
+        + markdown_inline_to_html(cell)
+        + "</th>"
+        for cell in header
+    )
+    body_rows = []
+    for row in body:
+        cells = "".join(
+            '<td style="padding:10px 11px;border:1px solid #e5e7eb;color:#334155;'
+            'font-size:14px;line-height:1.65;vertical-align:top;">'
+            + markdown_inline_to_html(cell)
+            + "</td>"
+            for cell in row
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+    return (
+        '<div style="width:100%;overflow:auto;margin:24px 0;border-radius:10px;box-sizing:border-box;">'
+        '<table style="width:100%;border-collapse:collapse;background:#ffffff;">'
+        f"<thead><tr>{header_cells}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table></div>"
+    )
+
+
+def render_divider() -> str:
+    return (
+        '<p style="margin:36px 0 32px;text-align:center;line-height:1;color:#d8c7ad;'
+        'font-size:13px;letter-spacing:0;">—</p>'
+    )
+
+
+def render_callout(text: str) -> str:
+    marker = next((item for item in CALLOUT_MARKERS if text.startswith(item)), "")
+    label, background, border, color = CALLOUT_MARKERS.get(marker, ("提示", "#f8fafc", "#94a3b8", "#334155"))
+    body = text[len(marker) :].strip() if marker else text.strip()
+    return (
+        f'<blockquote style="margin:24px 0 28px;padding:15px 18px 15px 20px;background:{background};'
+        f'border-left:4px solid {border};border-radius:0 10px 10px 0;color:{color};'
+        'font-size:16px;line-height:1.95;font-weight:500;width:100%;box-sizing:border-box;'
+        'box-shadow:0 8px 22px rgba(17,24,39,0.06);">'
+        f'<strong style="display:block;margin-bottom:5px;color:{color};font-size:14px;font-weight:800;">{html.escape(marker + " " + label).strip()}</strong>'
+        + markdown_inline_to_html(body)
+        + "</blockquote>"
+    )
+
+
+def render_image_caption(text: str) -> str:
+    """Render '*▼ caption*' style paragraphs as a centered, pill-shaped caption.
+
+    These appear right under images and describe what the reader is looking at.
+    Treating them as plain paragraphs leaves raw asterisks in the rendered output
+    and the line floats too close to the next paragraph; a small caption pill is
+    closer to what the author intends and looks intentional in WeChat preview.
+    """
+    match = IMAGE_CAPTION_RE.match(text)
+    arrow = match.group(1) if match else ""
+    body = match.group(2) if match else text
+    inner = markdown_inline_to_html(body)
+    return (
+        '<p style="margin:-10px 0 24px;text-align:center;line-height:1.6;">'
+        '<span style="display:inline-block;padding:5px 14px;background:#f1f5f9;'
+        'color:#475569;font-size:13px;border-radius:999px;'
+        'border:1px solid #e5e7eb;letter-spacing:0;">'
+        f'<span style="margin-right:6px;color:#c2410c;">{html.escape(arrow)}</span>'
+        f'{inner}'
+        '</span>'
+        "</p>"
+    )
+
+
+def is_generated_table_image(src: str) -> bool:
+    normalized = src.replace("\\", "/")
+    return (
+        normalized.startswith("assets/tables/")
+        or normalized.startswith("../assets/tables/")
+        or "/assets/tables/" in normalized
+        or "/tables/table_" in normalized
+    )
+
+
+def render_list(items: list[str], ordered: bool, start: int | None = None) -> str:
+    if ordered:
+        first_number = start or 1
+        return "".join(
+            '<p style="font-size:16px;line-height:1.95;margin:0 0 10px;color:#2c2c2c;">'
+            f'<span style="display:inline-block;min-width:1.6em;color:#d97706;font-weight:800;">{first_number + offset}.</span>&nbsp;'
+            + markdown_inline_to_html(item.strip())
+            + "</p>"
+            for offset, item in enumerate(items)
+        )
+
+    tag = "ol" if ordered else "ul"
+    start_attr = f' start="{start}"' if ordered and start and start > 1 else ""
+    list_style = "decimal" if ordered else "disc"
+    rendered_items = "".join(
+        '<li style="margin:0 0 8px;padding-left:2px;">' + markdown_inline_to_html(item.strip()) + "</li>"
+        for item in items
+    )
+    return (
+        f'<{tag}{start_attr} style="margin:0 0 20px 1.2em;padding:0;color:#2c2c2c;'
+        f'font-size:16px;line-height:1.9;list-style-type:{list_style};">'
+        + rendered_items
+        + f"</{tag}>"
+    )
+
+
+def render_code_block(code: str, language: str) -> str:
+    safe_code = render_code_with_placeholder_badges(code)
+    return (
+        '<pre style="margin:22px 0;padding:13px 14px;background:#f6f8fa;border:1px solid #d0d7de;'
+        'border-radius:8px;color:#1f2937;font-size:13px;line-height:1.75;'
+        'font-family:Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;'
+        'overflow-wrap:anywhere;width:100%;box-sizing:border-box;">'
+        '<code style="display:block;font-family:Menlo,Consolas,monospace;color:#1f2937;'
+        'background:transparent;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;">'
+        + safe_code
+        + "</code></pre>"
+    )
+
+
+def render_code_with_placeholder_badges(code: str) -> str:
+    chunks: list[str] = []
+    last = 0
+
+    def replace(match: re.Match[str]) -> str:
+        value = match.group(1).strip()
+        label = CODE_PLACEHOLDERS.get(value, value)
+        return (
+            f'<span data-placeholder="code" style="{CODE_PLACEHOLDER_STYLE}">'
+            + html.escape(f"【{label}】")
+            + "</span>"
+        )
+
+    for match in re.finditer(r"【([^】]+)】", code):
+        chunks.append(html.escape(code[last : match.start()]))
+        chunks.append(replace(match))
+        last = match.end()
+    chunks.append(html.escape(code[last:]))
+    return "".join(chunks)
+
+
+def normalize_code_placeholder_text(code: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        value = match.group(1).strip()
+        return f"【{CODE_PLACEHOLDERS.get(value, value)}】"
+
+    return re.sub(r"【([^】]+)】", replace, code)
+
+
+def render_platform_code_block(code: str, language: str) -> str:
+    safe_code = html.escape(normalize_code_placeholder_text(code))
+    safe_language = html.escape(language.strip())
+    label = f'<div style="margin:0 0 6px;color:#64748b;font-size:12px;">{safe_language}</div>' if safe_language else ""
+    return (
+        '<pre style="margin:20px 0;padding:13px 14px;background:#f8fafc;border:1px solid #cbd5e1;'
+        'border-radius:6px;color:#0f172a;font-size:13px;line-height:1.75;'
+        'font-family:Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;'
+        'overflow-wrap:anywhere;box-sizing:border-box;">'
+        + label
+        + '<code style="font-family:Menlo,Consolas,monospace;white-space:pre-wrap;background:transparent;color:#0f172a;">'
+        + safe_code
+        + "</code></pre>"
+    )
+
+
+def image_label(alt_text: str, index: int) -> str:
+    label = strip_inline_markdown(alt_text).strip()
+    if not label or label.lower() == "image":
+        return f"图片 {index}"
+    return label
+
+
+def image_src_for_mode(src: str, image_mode: str, asset_base_dir: Path | None = None) -> str:
+    if image_mode != "data" or REMOTE_RE.match(src) or asset_base_dir is None:
+        return src
+    path = (asset_base_dir / src).resolve()
+    if not path.exists() or not path.is_file():
+        return src
+    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def normalize_remote_image_key(value: str) -> str:
+    key = clean_image_target(unquote(str(value))).replace("\\", "/").strip()
+    while key.startswith("./"):
+        key = key[2:]
+    while key.startswith("../"):
+        key = key[3:]
+    return key
+
+
+def expand_remote_image_lookup(mapping: dict[str, str]) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    basename_values: dict[str, set[str]] = {}
+    for raw_key, raw_url in mapping.items():
+        url = str(raw_url).strip()
+        if not url:
+            continue
+        if not url.startswith("https://"):
+            raise ValueError(f"Remote image URL must be HTTPS: {url}")
+        key = str(raw_key).strip()
+        normalized = normalize_remote_image_key(key)
+        candidates = {key, normalized, f"../{normalized}"}
+        for candidate in candidates:
+            if candidate:
+                lookup[candidate] = url
+        basename_values.setdefault(Path(normalized).name, set()).add(url)
+
+    for basename, values in basename_values.items():
+        if basename and len(values) == 1:
+            lookup[basename] = next(iter(values))
+    return lookup
+
+
+def load_remote_image_map(path: Path | str | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    map_path = Path(path).resolve()
+    data = json.loads(map_path.read_text(encoding="utf-8"))
+    mapping: dict[str, str] = {}
+    if isinstance(data, dict) and isinstance(data.get("images"), list):
+        for item in data["images"]:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("src") or item.get("local") or item.get("path") or item.get("file")
+            url = item.get("url") or item.get("remote") or item.get("remote_url")
+            if key and url:
+                mapping[str(key)] = str(url)
+    elif isinstance(data, dict):
+        for key, url in data.items():
+            if isinstance(url, str):
+                mapping[str(key)] = url
+    else:
+        raise ValueError("--remote-image-map must be a JSON object or an object with an images array")
+    return expand_remote_image_lookup(mapping)
+
+
+def try_upload_zhihu_images(
+    image_manifest: list[dict[str, object]],
+    asset_base_dir: Path,
+    cookie_file: Path | str | None,
+    verbose: bool = True,
+) -> tuple[dict[str, str], str | None]:
+    """Upload local images to Zhihu and return (remote_url_map, error_reason).
+
+    The error_reason is a short human-readable string explaining why the upload
+    could not happen or what failed. Callers should surface it so the user
+    knows why zhihu.html still has placeholders.
+    """
+    if not image_manifest:
+        return {}, None
+
+    candidate_paths: list[Path] = []
+    if cookie_file:
+        candidate_paths.append(Path(cookie_file).expanduser())
+    candidate_paths.append(Path.home() / ".zhihu-cli" / "cookies.json")
+    cookie_path: Path | None = next((path for path in candidate_paths if path.exists()), None)
+    if not cookie_path:
+        return {}, (
+            "未找到知乎 Cookie 文件。请先运行 "
+            "`python3 scripts/zhihu_login.py` 抓取登录 Cookie，或显式传 --zhihu-cookie-file。"
+        )
+
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import upload_zhihu_images as _zhihu  # noqa: WPS433 - local helper
+    except Exception as exc:
+        return {}, f"加载 upload_zhihu_images 失败：{exc}"
+
+    try:
+        cookies = _zhihu.load_cookie_file(cookie_path)
+    except Exception as exc:
+        return {}, f"解析 Cookie 文件 {cookie_path} 失败：{exc}"
+    missing = sorted(_zhihu.REQUIRED_COOKIES - set(cookies.keys()))
+    if missing:
+        return {}, (
+            f"Cookie 文件 {cookie_path} 缺少 {', '.join(missing)}；"
+            "重新运行 `python3 scripts/zhihu_login.py` 获取最新登录 Cookie。"
+        )
+
+    try:
+        opener = _zhihu.build_opener(cookies)
+        headers = _zhihu.base_headers(cookies.get("_xsrf", ""))
+    except Exception as exc:
+        return {}, f"初始化知乎客户端失败：{exc}"
+
+    uploaded: dict[str, str] = {}
+    local_items = [
+        item for item in image_manifest
+        if str(item.get("src") or "") and not REMOTE_RE.match(str(item.get("src") or ""))
+    ]
+    total = len(local_items)
+    failed: list[str] = []
+    for idx, item in enumerate(local_items, start=1):
+        src = str(item.get("src") or "")
+        local_path = (asset_base_dir / src).resolve()
+        if not local_path.exists():
+            failed.append(f"{src} (本地缺失)")
+            continue
+        if verbose:
+            print(
+                f"[zhihu-upload {idx}/{total}] {local_path.name}",
+                file=sys.stderr,
+                flush=True,
+            )
+        try:
+            url = _zhihu.upload_zhihu_image(opener, headers, local_path, source=src)
+        except Exception as exc:
+            failed.append(f"{local_path.name}: {exc}")
+            continue
+        if not url:
+            failed.append(f"{local_path.name} 没拿到 URL")
+            continue
+        if verbose:
+            print(f"  -> {url}", file=sys.stderr, flush=True)
+        # Map both the raw assets path and the platforms-relative form, since
+        # rewrite_images_to_remote_urls tries multiple candidate keys.
+        uploaded[src] = url
+        uploaded[f"../{src}"] = url
+        uploaded[Path(src).name] = url
+    error = None
+    if failed:
+        error = "部分图片上传未成功：" + "；".join(failed)
+    return uploaded, error
+
+
+def remote_url_for_image(src: str, remote_image_map: dict[str, str]) -> str | None:
+    if not remote_image_map:
+        return None
+    raw = clean_image_target(src)
+    normalized = normalize_remote_image_key(raw)
+    for candidate in (raw, normalized, f"../{normalized}", Path(normalized).name):
+        url = remote_image_map.get(candidate)
+        if url:
+            return url
+    return None
+
+
+def rewrite_images_to_remote_urls(
+    markdown: str,
+    remote_image_map: dict[str, str],
+) -> tuple[str, list[str]]:
+    missing: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        alt = match.group(1)
+        src = clean_image_target(match.group(2))
+        if REMOTE_RE.match(src):
+            return match.group(0)
+        url = remote_url_for_image(src, remote_image_map)
+        if not url:
+            missing.append(src)
+            return match.group(0)
+        return f"![{alt}]({url})"
+
+    return IMAGE_RE.sub(replace, markdown), missing
+
+
+def render_image_block(
+    alt_text: str,
+    src: str,
+    index: int,
+    image_mode: str,
+    asset_base_dir: Path | None = None,
+) -> str:
+    label = image_label(alt_text, index)
+    safe_label = html.escape(label)
+    safe_src = html.escape(image_src_for_mode(src, image_mode, asset_base_dir))
+    is_table_image = is_generated_table_image(src)
+    if image_mode == "placeholder":
+        return (
+            '<p style="margin:24px 0;padding:12px 14px;background:#f8fafc;border:1px dashed #cbd5e1;'
+            'border-radius:8px;color:#475569;font-size:14px;line-height:1.75;width:100%;box-sizing:border-box;">'
+            f'<strong style="color:#334155;font-weight:700;">图片占位 {index}：{safe_label}</strong><br>'
+            f'<span style="font-size:12px;color:#64748b;">发布时上传并替换：{safe_src}</span>'
+            "</p>"
+        )
+    caption = ""
+    if alt_text.strip() and alt_text.strip().lower() != "image" and not is_table_image:
+        caption = (
+            '<p style="margin:-10px 0 24px;text-align:center;line-height:1.6;">'
+            '<span style="display:inline-block;padding:5px 14px;background:#f1f5f9;'
+            'color:#475569;font-size:13px;border-radius:999px;'
+            'border:1px solid #e5e7eb;letter-spacing:0;">'
+            + safe_label
+            + "</span></p>"
+        )
+    image_style = (
+        "display:block;max-width:100%;height:auto;border-radius:6px;margin:0 auto;"
+        "border:1px solid #e5e7eb;box-shadow:0 8px 24px rgba(17,24,39,0.06);"
+    )
+    if not is_table_image:
+        image_style = (
+            "display:block;max-width:100%;height:auto;border-radius:8px;margin:0 auto;"
+            "box-shadow:0 2px 8px rgba(15,23,42,0.08);"
+        )
+    return (
+        '<p style="margin:26px 0 14px;text-align:center;">'
+        f'<img src="{safe_src}" alt="{safe_label}" style="{image_style}" />'
+        "</p>"
+        + caption
+    )
+
+
+def extract_image_manifest(markdown: str) -> list[dict[str, object]]:
+    manifest: list[dict[str, object]] = []
+    for index, match in enumerate(IMAGE_RE.finditer(markdown), start=1):
+        alt_text = match.group(1).strip()
+        src = clean_image_target(match.group(2))
+        manifest.append({"index": index, "label": image_label(alt_text, index), "src": src})
+    return manifest
+
+
+def render_image_manifest(title: str, manifest: list[dict[str, object]]) -> str:
+    lines = [f"# {title} 图片上传清单", ""]
+    if not manifest:
+        lines.append("本文没有本地图片。")
+        return "\n".join(lines) + "\n"
+    lines.extend(
+        [
+            "非知乎平台的主 HTML 会尽量内嵌本地图片。",
+            "知乎需要通过图片接口上传为 HTTPS 图片；如果当前 `zhihu.html` 显示占位符，请按下列顺序从 `assets/` 手工上传，或提供知乎 Cookie 重新构建。",
+            "",
+        ]
+    )
+    for item in manifest:
+        lines.append(f"{item['index']}. {item['label']}")
+        lines.append(f"   - 文件：`{item['src']}`")
+    return "\n".join(lines) + "\n"
+
+
+def render_remote_image_map_template(manifest: list[dict[str, object]]) -> str:
+    data = {
+        f"../{item['src']}": ""
+        for item in manifest
+        if isinstance(item.get("src"), str) and not REMOTE_RE.match(str(item["src"]))
+    }
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+
+def render_blocks(
+    markdown: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
     lines = markdown.splitlines()
     html_lines: list[str] = []
     paragraph: list[str] = []
     code_lines: list[str] = []
     quote_lines: list[str] = []
+    list_items: list[str] = []
+    list_ordered = False
     in_code = False
+    code_language = ""
+    first_paragraph = True
+    ordered_number = 0
+    image_index = 0
+
+    def flush_paragraph() -> None:
+        nonlocal first_paragraph, ordered_number
+        if not paragraph:
+            return
+        text = " ".join(item.strip() for item in paragraph).strip()
+        if any(text.startswith(marker) for marker in CALLOUT_MARKERS):
+            html_lines.append(render_callout(text))
+        elif IMAGE_CAPTION_RE.match(text):
+            html_lines.append(render_image_caption(text))
+        else:
+            style = (
+                "font-size:17px;line-height:2;margin:0 0 22px;color:#222222;font-weight:400;"
+                if first_paragraph
+                else "font-size:16px;line-height:1.95;margin:0 0 18px;color:#2c2c2c;"
+            )
+            html_lines.append(f'<p style="{style}">' + markdown_inline_to_html(text) + "</p>")
+        first_paragraph = False
+        ordered_number = 0
+        paragraph.clear()
+
+    def flush_quote() -> None:
+        nonlocal ordered_number
+        if not quote_lines:
+            return
+        text = " ".join(quote_lines).strip()
+        html_lines.append(
+            '<blockquote style="margin:24px 0 28px;padding:16px 18px 16px 20px;background:#fff7ed;'
+            'border-left:4px solid #d97706;border-radius:0 10px 10px 0;color:#78350f;'
+            'font-size:16px;line-height:1.95;font-weight:500;width:100%;box-sizing:border-box;'
+            'box-shadow:0 8px 22px rgba(17,24,39,0.06);">'
+            + markdown_inline_to_html(text)
+            + "</blockquote>"
+        )
+        ordered_number = 0
+        quote_lines.clear()
+
+    def flush_list() -> None:
+        nonlocal ordered_number
+        if not list_items:
+            return
+        start = ordered_number + 1 if list_ordered else None
+        html_lines.append(render_list(list_items, list_ordered, start))
+        if list_ordered:
+            ordered_number += len(list_items)
+        list_items.clear()
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("```"):
+            if in_code:
+                html_lines.append(render_code_block("\n".join(code_lines), code_language))
+                code_lines.clear()
+                in_code = False
+                code_language = ""
+            else:
+                flush_list()
+                flush_paragraph()
+                flush_quote()
+                in_code = True
+                code_language = line[3:].strip()
+            index += 1
+            continue
+        if in_code:
+            code_lines.append(line)
+            index += 1
+            continue
+
+        if not line.strip():
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            index += 1
+            continue
+
+        heading = HEADING_RE.match(line)
+        if heading:
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            level = len(heading.group(1))
+            text = markdown_inline_to_html(heading.group(2).strip())
+            if level == 2:
+                html_lines.append(
+                    '<h2 style="font-size:22px;line-height:1.55;margin:44px 0 20px;color:#111827;'
+                    'font-weight:900;padding:0 0 0 15px;border-left:5px solid #d97706;'
+                    'width:100%;box-sizing:border-box;letter-spacing:0;background:transparent;">'
+                    + text
+                    + "</h2>"
+                )
+                ordered_number = 0
+            else:
+                html_lines.append(
+                    '<h3 style="font-size:18px;line-height:1.6;margin:30px 0 16px;color:#ffffff;'
+                    'font-weight:800;padding:10px 14px;background:#111827;border-left:4px solid #f59e0b;'
+                    'border-radius:8px;width:100%;box-sizing:border-box;letter-spacing:0;">'
+                    + text
+                    + "</h3>"
+                )
+                ordered_number = 0
+            index += 1
+            continue
+
+        if HR_RE.match(line):
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            html_lines.append(render_divider())
+            ordered_number = 0
+            index += 1
+            continue
+
+        if is_table_start(lines, index):
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            table_lines = [lines[index], lines[index + 1]]
+            index += 2
+            while index < len(lines) and lines[index].strip() and "|" in lines[index]:
+                table_lines.append(lines[index])
+                index += 1
+            html_lines.append(render_table(table_lines))
+            ordered_number = 0
+            continue
+
+        image = IMAGE_RE.match(line.strip())
+        if image:
+            image_index += 1
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            alt_text = image.group(1).strip()
+            src = clean_image_target(image.group(2))
+            html_lines.append(render_image_block(alt_text, src, image_index, image_mode, asset_base_dir))
+            index += 1
+            continue
+
+        if line.lstrip().startswith(">"):
+            flush_list()
+            flush_paragraph()
+            quote_lines.append(line.lstrip()[1:].strip())
+            index += 1
+            continue
+
+        unordered = UNORDERED_LIST_RE.match(line)
+        ordered = ORDERED_LIST_RE.match(line)
+        if unordered or ordered:
+            flush_paragraph()
+            flush_quote()
+            is_ordered = ordered is not None
+            content = (ordered or unordered).group(1).strip()
+            if list_items and list_ordered != is_ordered:
+                flush_list()
+            list_ordered = is_ordered
+            list_items.append(content)
+            index += 1
+            continue
+
+        flush_list()
+        paragraph.append(line)
+        index += 1
+
+    flush_list()
+    flush_paragraph()
+    flush_quote()
+    if in_code and code_lines:
+        html_lines.append(render_code_block("\n".join(code_lines), code_language))
+    return "\n".join(html_lines)
+
+
+def render_platform_table(table_lines: list[str]) -> str:
+    rows = [split_table_row(line) for line in table_lines]
+    if len(rows) < 2:
+        return ""
+    header = rows[0]
+    body = rows[2:]
+    header_cells = "".join(
+        '<th style="padding:8px 10px;border:1px solid #d1d5db;text-align:left;">'
+        + markdown_inline_to_editor_html(cell)
+        + "</th>"
+        for cell in header
+    )
+    body_rows = []
+    for row in body:
+        cells = "".join(
+            '<td style="padding:8px 10px;border:1px solid #d1d5db;vertical-align:top;">'
+            + markdown_inline_to_editor_html(cell)
+            + "</td>"
+            for cell in row
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+    return (
+        '<table style="width:100%;border-collapse:collapse;margin:18px 0;">'
+        f"<thead><tr>{header_cells}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table>"
+    )
+
+
+def render_platform_list(items: list[str], ordered: bool) -> str:
+    tag = "ol" if ordered else "ul"
+    rendered_items = "".join("<li>" + markdown_inline_to_editor_html(item.strip()) + "</li>" for item in items)
+    return f'<{tag} style="margin:0 0 18px 1.2em;padding:0;line-height:1.85;">{rendered_items}</{tag}>'
+
+
+def render_platform_image_block(
+    alt_text: str,
+    src: str,
+    index: int,
+    platform: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    profile = PLATFORM_PROFILES[platform]
+    label = html.escape(image_label(alt_text, index))
+    safe_src = html.escape(image_src_for_mode(src, image_mode, asset_base_dir))
+    if image_mode != "placeholder":
+        caption = ""
+        if alt_text.strip() and alt_text.strip().lower() != "image":
+            caption = (
+                '<p style="margin:-12px 0 20px;text-align:center;color:#64748b;font-size:12px;line-height:1.6;">'
+                + label
+                + "</p>"
+            )
+        return (
+            '<p style="margin:22px 0;text-align:center;">'
+            f'<img src="{safe_src}" alt="{label}" style="display:block;max-width:100%;height:auto;margin:0 auto;border-radius:6px;" />'
+            "</p>"
+            + caption
+        )
+    return (
+        '<p style="margin:22px 0;padding:10px 12px;border:1px dashed #cbd5e1;background:#f8fafc;'
+        'border-radius:6px;color:#475569;line-height:1.7;">'
+        f'<strong>图片占位 {index}：{label}</strong><br>'
+        f'<span>发布到{html.escape(str(profile["label"]))}时上传并替换：{html.escape(src)}</span>'
+        "</p>"
+    )
+
+
+def render_platform_blocks(
+    markdown: str,
+    platform: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    lines = markdown.splitlines()
+    html_lines: list[str] = []
+    paragraph: list[str] = []
+    code_lines: list[str] = []
+    quote_lines: list[str] = []
+    list_items: list[str] = []
+    list_ordered = False
+    in_code = False
+    code_language = ""
+    image_index = 0
 
     def flush_paragraph() -> None:
         if not paragraph:
             return
         text = " ".join(item.strip() for item in paragraph).strip()
-        html_lines.append(
-            '<p style="font-size:16px;line-height:2;margin:0 0 18px;color:#3f352c;">'
-            + markdown_inline_to_html(text)
-            + "</p>"
-        )
+        if any(text.startswith(marker) for marker in CALLOUT_MARKERS):
+            html_lines.append(
+                '<blockquote style="margin:18px 0;padding:12px 14px;border-left:4px solid #f59e0b;'
+                'background:#fff7ed;color:#7c2d12;line-height:1.85;">'
+                + markdown_inline_to_editor_html(text)
+                + "</blockquote>"
+            )
+        elif IMAGE_CAPTION_RE.match(text):
+            html_lines.append(render_editor_image_caption(text))
+        else:
+            html_lines.append(
+                '<p style="margin:0 0 16px;line-height:1.85;color:#1f2937;">'
+                + markdown_inline_to_editor_html(text)
+                + "</p>"
+            )
         paragraph.clear()
 
     def flush_quote() -> None:
@@ -159,89 +1129,831 @@ def render_blocks(markdown: str) -> str:
             return
         text = " ".join(quote_lines).strip()
         html_lines.append(
-            '<blockquote style="margin:22px 0;padding:14px 16px;background:#f6efe3;'
-            'border-left:4px solid #b7791f;color:#5f4b32;font-size:15px;line-height:1.9;">'
-            + markdown_inline_to_html(text)
+            '<blockquote style="margin:18px 0;padding:12px 14px;border-left:4px solid #64748b;'
+            'background:#f8fafc;color:#334155;line-height:1.85;">'
+            + markdown_inline_to_editor_html(text)
             + "</blockquote>"
         )
         quote_lines.clear()
 
-    for line in lines:
+    def flush_list() -> None:
+        if not list_items:
+            return
+        html_lines.append(render_platform_list(list_items, list_ordered))
+        list_items.clear()
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
         if line.startswith("```"):
             if in_code:
-                html_lines.append(
-                    '<pre style="background:#292524;color:#f8fafc;border-radius:8px;padding:14px;'
-                    'overflow:auto;font-size:13px;line-height:1.7;margin:18px 0;">'
-                    + html.escape("\n".join(code_lines))
-                    + "</pre>"
-                )
+                html_lines.append(render_platform_code_block("\n".join(code_lines), code_language))
                 code_lines.clear()
                 in_code = False
+                code_language = ""
             else:
+                flush_list()
                 flush_paragraph()
                 flush_quote()
                 in_code = True
+                code_language = line[3:].strip()
+            index += 1
             continue
         if in_code:
             code_lines.append(line)
+            index += 1
             continue
 
         if not line.strip():
+            flush_list()
             flush_paragraph()
             flush_quote()
+            index += 1
             continue
 
         heading = HEADING_RE.match(line)
         if heading:
+            flush_list()
             flush_paragraph()
             flush_quote()
             level = len(heading.group(1))
-            text = markdown_inline_to_html(heading.group(2).strip())
-            if level == 2:
-                html_lines.append(
-                    '<h2 style="font-size:21px;line-height:1.5;margin:34px 0 16px;color:#2f2a24;'
-                    'font-weight:700;border-bottom:1px solid #e7dac6;padding-bottom:8px;">'
-                    + text
-                    + "</h2>"
-                )
-            else:
-                html_lines.append(
-                    '<h3 style="font-size:18px;line-height:1.6;margin:26px 0 12px;color:#4b4036;font-weight:700;">'
-                    + text
-                    + "</h3>"
-                )
+            text = markdown_inline_to_editor_html(heading.group(2).strip())
+            tag = "h2" if level <= 2 else "h3"
+            style = (
+                "font-size:22px;line-height:1.45;margin:30px 0 14px;font-weight:700;color:#111827;"
+                if tag == "h2"
+                else "font-size:18px;line-height:1.55;margin:24px 0 10px;font-weight:700;color:#111827;"
+            )
+            html_lines.append(f'<{tag} style="{style}">{text}</{tag}>')
+            index += 1
+            continue
+
+        if HR_RE.match(line):
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            html_lines.append('<hr style="border:0;border-top:1px solid #e5e7eb;margin:28px 0;">')
+            index += 1
+            continue
+
+        if is_table_start(lines, index):
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            table_lines = [lines[index], lines[index + 1]]
+            index += 2
+            while index < len(lines) and lines[index].strip() and "|" in lines[index]:
+                table_lines.append(lines[index])
+                index += 1
+            html_lines.append(render_platform_table(table_lines))
             continue
 
         image = IMAGE_RE.match(line.strip())
         if image:
+            image_index += 1
+            flush_list()
             flush_paragraph()
             flush_quote()
-            alt = html.escape(image.group(1))
-            src = html.escape(clean_image_target(image.group(2)))
             html_lines.append(
-                '<figure style="margin:24px 0;text-align:center;">'
-                f'<img src="{src}" alt="{alt}" style="max-width:100%;height:auto;border-radius:6px;" />'
-                f'<figcaption style="font-size:12px;color:#8a8175;margin-top:8px;">{alt}</figcaption>'
-                "</figure>"
+                render_platform_image_block(
+                    image.group(1).strip(),
+                    clean_image_target(image.group(2)),
+                    image_index,
+                    platform,
+                    image_mode=image_mode,
+                    asset_base_dir=asset_base_dir,
+                )
             )
+            index += 1
             continue
 
         if line.lstrip().startswith(">"):
+            flush_list()
             flush_paragraph()
             quote_lines.append(line.lstrip()[1:].strip())
+            index += 1
             continue
 
-        paragraph.append(line)
+        unordered = UNORDERED_LIST_RE.match(line)
+        ordered = ORDERED_LIST_RE.match(line)
+        if unordered or ordered:
+            flush_paragraph()
+            flush_quote()
+            is_ordered = ordered is not None
+            content = (ordered or unordered).group(1).strip()
+            if list_items and list_ordered != is_ordered:
+                flush_list()
+            list_ordered = is_ordered
+            list_items.append(content)
+            index += 1
+            continue
 
+        flush_list()
+        paragraph.append(line)
+        index += 1
+
+    flush_list()
     flush_paragraph()
     flush_quote()
     if in_code and code_lines:
-        html_lines.append("<pre>" + html.escape("\n".join(code_lines)) + "</pre>")
+        html_lines.append(render_platform_code_block("\n".join(code_lines), code_language))
     return "\n".join(html_lines)
 
 
-def render_wechat_html(title: str, markdown: str) -> str:
-    body = render_blocks(markdown)
+def render_toutiao_table(table_lines: list[str]) -> str:
+    return render_zsxq_table(table_lines)
+
+
+def render_toutiao_image_block(
+    alt_text: str,
+    src: str,
+    index: int,
+    image_mode: str,
+    asset_base_dir: Path | None = None,
+) -> str:
+    label = html.escape(image_label(alt_text, index))
+    safe_src = html.escape(image_src_for_mode(src, image_mode, asset_base_dir))
+    if image_mode == "placeholder":
+        return f"<p><strong>图片占位 {index}：</strong>{label}<br>{html.escape(src)}</p>"
+    return f'<p><img src="{safe_src}" alt="{label}"></p>'
+
+
+def render_toutiao_code_block(code: str) -> str:
+    return "<pre><code>" + html.escape(normalize_code_placeholder_text(code)) + "</code></pre>"
+
+
+def render_toutiao_ordered_list(items: list[str], start: int) -> str:
+    paragraphs = []
+    for offset, item in enumerate(items):
+        number = start + offset
+        paragraphs.append(
+            f"<p><strong>{number}.</strong>&nbsp;"
+            + markdown_inline_to_editor_html(item.strip())
+            + "</p>"
+        )
+    return "\n".join(paragraphs)
+
+
+def render_toutiao_callout(text: str) -> str:
+    marker = next((item for item in CALLOUT_MARKERS if text.startswith(item)), "")
+    label = CALLOUT_MARKERS.get(marker, ("提示", "", "", ""))[0]
+    body = text[len(marker) :].strip() if marker else text.strip()
+    return (
+        "<blockquote><p>"
+        f"<strong>{html.escape((marker + ' ' + label + '：').strip())}</strong>"
+        f"{markdown_inline_to_editor_html(body)}"
+        "</p></blockquote>"
+    )
+
+
+def should_promote_toutiao_quote(text: str) -> bool:
+    plain = strip_inline_markdown(text)
+    if plain.startswith(("先说结论：", "整个流程：", "适合你：", "先看重点：")):
+        return True
+    keyword_groups = (
+        ("不支持直接导入", "需要手动新建"),
+        ("复制保存到本地", "不要发到任何公开平台"),
+        ("不用时停止实例", "别留闲置资源"),
+        ("不要碰 GPU", "负载均衡"),
+        ("Standard persistent disk", "Standard"),
+    )
+    return any(all(keyword in plain for keyword in keywords) for keywords in keyword_groups)
+
+
+def render_toutiao_quote_paragraph(text: str) -> str:
+    return "<blockquote><p>" + markdown_inline_to_editor_html(text) + "</p></blockquote>"
+
+
+def toutiao_block_type(block: str) -> str:
+    if block.startswith("<h2>"):
+        return "h2"
+    if block.startswith("<h3>"):
+        return "h3"
+    if block.startswith("<blockquote>"):
+        return "quote"
+    if block.startswith("<pre>"):
+        return "code"
+    if block.startswith("<ul>"):
+        return "list"
+    if re.match(r"^<p><strong>\d+\.</strong>", block):
+        return "list"
+    if '<img src="' in block:
+        return "image"
+    return "paragraph"
+
+
+def apply_toutiao_spacing(blocks: list[str]) -> list[str]:
+    return blocks
+
+
+def render_toutiao_blocks(
+    markdown: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    lines = markdown.splitlines()
+    html_lines: list[str] = []
+    paragraph: list[str] = []
+    code_lines: list[str] = []
+    quote_lines: list[str] = []
+    list_items: list[str] = []
+    list_ordered = False
+    in_code = False
+    image_index = 0
+    ordered_number = 0
+
+    def flush_paragraph() -> None:
+        nonlocal ordered_number
+        if not paragraph:
+            return
+        text = " ".join(item.strip() for item in paragraph).strip()
+        if any(text.startswith(marker) for marker in CALLOUT_MARKERS):
+            html_lines.append(render_toutiao_callout(text))
+        elif IMAGE_CAPTION_RE.match(text):
+            html_lines.append(render_editor_image_caption(text))
+        elif should_promote_toutiao_quote(text):
+            html_lines.append(render_toutiao_quote_paragraph(text))
+        else:
+            for paragraph_text in split_zsxq_paragraph(text, max_chars=80):
+                html_lines.append("<p>" + markdown_inline_to_editor_html(paragraph_text) + "</p>")
+        ordered_number = 0
+        paragraph.clear()
+
+    def flush_quote() -> None:
+        nonlocal ordered_number
+        if not quote_lines:
+            return
+        text = " ".join(item.strip() for item in quote_lines).strip()
+        html_lines.append(render_toutiao_quote_paragraph(text))
+        ordered_number = 0
+        quote_lines.clear()
+
+    def flush_list() -> None:
+        nonlocal ordered_number
+        if not list_items:
+            return
+        if list_ordered:
+            start = ordered_number + 1
+            html_lines.append(render_toutiao_ordered_list(list_items, start))
+            ordered_number += len(list_items)
+        else:
+            items = "".join("<li>" + markdown_inline_to_editor_html(item.strip()) + "</li>" for item in list_items)
+            html_lines.append(f"<ul>{items}</ul>")
+            ordered_number = 0
+        list_items.clear()
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("```"):
+            if in_code:
+                html_lines.append(render_toutiao_code_block("\n".join(code_lines)))
+                code_lines.clear()
+                in_code = False
+            else:
+                flush_list()
+                flush_paragraph()
+                flush_quote()
+                in_code = True
+            index += 1
+            continue
+        if in_code:
+            code_lines.append(line)
+            index += 1
+            continue
+
+        if not line.strip():
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            index += 1
+            continue
+
+        heading = HEADING_RE.match(line)
+        if heading:
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            level = len(heading.group(1))
+            text = markdown_inline_to_editor_html(heading.group(2).strip())
+            tag = "h2" if level <= 2 else "h3"
+            html_lines.append(f"<{tag}>{text}</{tag}>")
+            ordered_number = 0
+            index += 1
+            continue
+
+        if HR_RE.match(line):
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            ordered_number = 0
+            index += 1
+            continue
+
+        if is_table_start(lines, index):
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            table_lines = [lines[index], lines[index + 1]]
+            index += 2
+            while index < len(lines) and lines[index].strip() and "|" in lines[index]:
+                table_lines.append(lines[index])
+                index += 1
+            html_lines.append(render_toutiao_table(table_lines))
+            ordered_number = 0
+            continue
+
+        image = IMAGE_RE.match(line.strip())
+        if image:
+            image_index += 1
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            html_lines.append(
+                render_toutiao_image_block(
+                    image.group(1).strip(),
+                    clean_image_target(image.group(2)),
+                    image_index,
+                    image_mode=image_mode,
+                    asset_base_dir=asset_base_dir,
+                )
+            )
+            index += 1
+            continue
+
+        if line.lstrip().startswith(">"):
+            flush_list()
+            flush_paragraph()
+            quote_lines.append(line.lstrip()[1:].strip())
+            index += 1
+            continue
+
+        unordered = UNORDERED_LIST_RE.match(line)
+        ordered = ORDERED_LIST_RE.match(line)
+        if unordered or ordered:
+            flush_paragraph()
+            flush_quote()
+            is_ordered = ordered is not None
+            content = (ordered or unordered).group(1).strip()
+            if list_items and list_ordered != is_ordered:
+                flush_list()
+            list_ordered = is_ordered
+            list_items.append(content)
+            index += 1
+            continue
+
+        flush_list()
+        paragraph.append(line)
+        index += 1
+
+    flush_list()
+    flush_paragraph()
+    flush_quote()
+    if in_code and code_lines:
+        html_lines.append(render_toutiao_code_block("\n".join(code_lines)))
+    return "\n".join(apply_toutiao_spacing(html_lines))
+
+
+def render_toutiao_html(
+    title: str,
+    markdown: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    # No auto-prepended lead/route copy: the editor's title field handles the
+    # headline, and any opening paragraph should be authored in the source.
+    body = render_toutiao_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    safe_title = html.escape(title)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title} - 今日头条正文粘贴版</title>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
+
+
+def render_zhihu_html(
+    title: str,
+    markdown: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    # No auto-prepended lead/route copy: Zhihu's editor has a separate title
+    # field, and any intro should be authored in the source.
+    body = render_toutiao_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    safe_title = html.escape(title)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title} - 知乎正文粘贴版</title>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
+
+
+def render_platform_html(
+    platform: str,
+    title: str,
+    markdown: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    if platform == "zhihu":
+        return render_zhihu_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    if platform == "toutiao":
+        return render_toutiao_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    if platform == "zsxq":
+        return render_zsxq_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+
+    profile = PLATFORM_PROFILES[platform]
+    body = render_platform_blocks(markdown, platform, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    safe_title = html.escape(title)
+    safe_label = html.escape(str(profile["label"]))
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title} - {safe_label}</title>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
+
+
+def render_zsxq_table(table_lines: list[str]) -> str:
+    rows = [split_table_row(line) for line in table_lines]
+    if len(rows) < 2:
+        return ""
+    header = [strip_inline_markdown(cell) for cell in rows[0]]
+    body = rows[2:]
+    items = []
+    compact_budget_table = (
+        len(header) == 2
+        and header[0] in {"阈值", "预算比例", "比例"}
+        and header[1] in {"动作", "提醒", "提醒动作"}
+    )
+    for row in body:
+        label = markdown_inline_to_editor_html(row[0]) if row else "项目"
+        if compact_budget_table and len(row) >= 2:
+            items.append(f"<li><strong>{label}</strong>：{markdown_inline_to_editor_html(row[1])}</li>")
+            continue
+        details = []
+        for cell_index, cell in enumerate(row[1:], start=1):
+            key = header[cell_index] if cell_index < len(header) else f"字段 {cell_index + 1}"
+            details.append(
+                "<strong>"
+                + html.escape(key)
+                + "：</strong>"
+                + markdown_inline_to_editor_html(cell)
+            )
+        suffix = "<br>".join(details)
+        items.append(f"<li><strong>{label}</strong><br>{suffix}</li>" if suffix else f"<li><strong>{label}</strong></li>")
+    return "<ul>" + "".join(items) + "</ul>"
+
+
+def render_zsxq_image_block(
+    alt_text: str,
+    src: str,
+    index: int,
+    image_mode: str,
+    asset_base_dir: Path | None = None,
+) -> str:
+    label = html.escape(image_label(alt_text, index))
+    safe_src = html.escape(image_src_for_mode(src, image_mode, asset_base_dir))
+    if image_mode == "placeholder":
+        return f"<p><strong>图片占位：</strong>{label}<br>{html.escape(src)}</p>"
+    return f'<p><img src="{safe_src}" alt="{label}"></p>'
+
+
+def render_zsxq_code_block(code: str) -> str:
+    return "<pre><code>" + html.escape(normalize_code_placeholder_text(code)) + "</code></pre>"
+
+
+def render_zsxq_ordered_list(items: list[str], start: int) -> str:
+    paragraphs = []
+    for offset, item in enumerate(items):
+        number = start + offset
+        paragraphs.append(
+            f"<p><strong>{number}.</strong>&nbsp;"
+            + markdown_inline_to_editor_html(item.strip())
+            + "</p>"
+        )
+    return "\n".join(paragraphs)
+
+
+def split_zsxq_paragraph(text: str, max_chars: int = 86) -> list[str]:
+    if len(strip_inline_markdown(text)) <= max_chars:
+        return [text]
+    segments = re.split(r"(?<=[。！？；])\s*", text)
+    chunks: list[str] = []
+    current = ""
+    for segment in segments:
+        if not segment:
+            continue
+        candidate = current + segment if current else segment
+        if current and len(strip_inline_markdown(candidate)) > max_chars and not has_unclosed_inline_markup(current):
+            chunks.append(current)
+            current = segment
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [text]
+
+
+def has_unclosed_inline_markup(text: str) -> bool:
+    # Sentence splitting must not leave half of **bold**, __bold__, or `code`
+    # in one paragraph and the closing marker in the next.
+    value = re.sub(r"\\.", "", text)
+    return value.count("**") % 2 == 1 or value.count("__") % 2 == 1 or value.count("`") % 2 == 1
+
+
+def render_zsxq_callout(text: str) -> str:
+    marker = next((item for item in CALLOUT_MARKERS if text.startswith(item)), "")
+    label = CALLOUT_MARKERS.get(marker, ("提示", "", "", ""))[0]
+    body = text[len(marker) :].strip() if marker else text.strip()
+    return (
+        "<p>"
+        f"<strong>{ZSXQ_QUOTE_MARKER}{html.escape((marker + ' ' + label + '：').strip())}</strong>"
+        f"{markdown_inline_to_editor_html(body)}"
+        "</p>"
+    )
+
+
+def should_promote_zsxq_quote(text: str) -> bool:
+    plain = strip_inline_markdown(text)
+    if plain.startswith("整个流程："):
+        return True
+    keyword_groups = (
+        ("不支持直接导入", "需要手动新建"),
+        ("复制保存到本地", "不要发到任何公开平台"),
+        ("不用时停止实例", "别留闲置资源"),
+    )
+    return any(all(keyword in plain for keyword in keywords) for keywords in keyword_groups)
+
+
+def render_zsxq_quote_paragraph(text: str) -> str:
+    return f"<p><strong>{ZSXQ_QUOTE_MARKER}</strong>&nbsp;" + markdown_inline_to_editor_html(text) + "</p>"
+
+
+def zsxq_block_type(block: str) -> str:
+    if block.startswith("<h2>"):
+        return "h2"
+    if block.startswith("<h3>"):
+        return "h3"
+    if block.startswith("<blockquote>") or block.startswith(f"<p><strong>{ZSXQ_QUOTE_MARKER}"):
+        return "quote"
+    if block.startswith("<pre>"):
+        return "code"
+    if block.startswith("<ul>") or block.startswith("<ol>"):
+        return "list"
+    if re.match(r"^<p><strong>\d+\.</strong>", block):
+        return "list"
+    if '<img src="' in block:
+        return "image"
+    return "paragraph"
+
+
+def apply_zsxq_spacing(blocks: list[str]) -> list[str]:
+    result: list[str] = []
+
+    def push_spacer() -> None:
+        if result and result[-1] != ZSXQ_SPACER:
+            result.append(ZSXQ_SPACER)
+
+    for block in blocks:
+        block_type = zsxq_block_type(block)
+        if result and block_type in {"h2", "h3"}:
+            push_spacer()
+        result.append(block)
+        if block_type in {"quote", "code", "list", "image"}:
+            push_spacer()
+    if result and result[-1] == ZSXQ_SPACER:
+        result.pop()
+    return result
+
+
+def render_zsxq_blocks(
+    markdown: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    lines = markdown.splitlines()
+    html_lines: list[str] = []
+    paragraph: list[str] = []
+    code_lines: list[str] = []
+    quote_lines: list[str] = []
+    list_items: list[str] = []
+    list_ordered = False
+    in_code = False
+    image_index = 0
+    ordered_number = 0
+
+    def flush_paragraph() -> None:
+        nonlocal ordered_number
+        if not paragraph:
+            return
+        text = " ".join(item.strip() for item in paragraph).strip()
+        if any(text.startswith(marker) for marker in CALLOUT_MARKERS):
+            html_lines.append(render_zsxq_callout(text))
+        elif IMAGE_CAPTION_RE.match(text):
+            html_lines.append(render_editor_image_caption(text))
+        elif should_promote_zsxq_quote(text):
+            html_lines.append(render_zsxq_quote_paragraph(text))
+        else:
+            for paragraph_text in split_zsxq_paragraph(text):
+                html_lines.append("<p>" + markdown_inline_to_editor_html(paragraph_text) + "</p>")
+        ordered_number = 0
+        paragraph.clear()
+
+    def flush_quote() -> None:
+        nonlocal ordered_number
+        if not quote_lines:
+            return
+        text = " ".join(item.strip() for item in quote_lines).strip()
+        html_lines.append(render_zsxq_quote_paragraph(text))
+        ordered_number = 0
+        quote_lines.clear()
+
+    def flush_list() -> None:
+        nonlocal ordered_number
+        if not list_items:
+            return
+        if list_ordered:
+            start = ordered_number + 1
+            html_lines.append(render_zsxq_ordered_list(list_items, start))
+            ordered_number += len(list_items)
+        else:
+            items = "".join("<li>" + markdown_inline_to_editor_html(item.strip()) + "</li>" for item in list_items)
+            html_lines.append(f"<ul>{items}</ul>")
+            ordered_number = 0
+        list_items.clear()
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("```"):
+            if in_code:
+                html_lines.append(render_zsxq_code_block("\n".join(code_lines)))
+                code_lines.clear()
+                in_code = False
+            else:
+                flush_list()
+                flush_paragraph()
+                flush_quote()
+                in_code = True
+            index += 1
+            continue
+        if in_code:
+            code_lines.append(line)
+            index += 1
+            continue
+
+        if not line.strip():
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            index += 1
+            continue
+
+        heading = HEADING_RE.match(line)
+        if heading:
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            level = len(heading.group(1))
+            text = markdown_inline_to_editor_html(heading.group(2).strip())
+            tag = "h2" if level <= 2 else "h3"
+            html_lines.append(f"<{tag}>{text}</{tag}>")
+            ordered_number = 0
+            index += 1
+            continue
+
+        if HR_RE.match(line):
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            ordered_number = 0
+            index += 1
+            continue
+
+        if is_table_start(lines, index):
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            table_lines = [lines[index], lines[index + 1]]
+            index += 2
+            while index < len(lines) and lines[index].strip() and "|" in lines[index]:
+                table_lines.append(lines[index])
+                index += 1
+            html_lines.append(render_zsxq_table(table_lines))
+            ordered_number = 0
+            continue
+
+        image = IMAGE_RE.match(line.strip())
+        if image:
+            image_index += 1
+            flush_list()
+            flush_paragraph()
+            flush_quote()
+            html_lines.append(
+                render_zsxq_image_block(
+                    image.group(1).strip(),
+                    clean_image_target(image.group(2)),
+                    image_index,
+                    image_mode=image_mode,
+                    asset_base_dir=asset_base_dir,
+                )
+            )
+            index += 1
+            continue
+
+        if line.lstrip().startswith(">"):
+            flush_list()
+            flush_paragraph()
+            quote_lines.append(line.lstrip()[1:].strip())
+            index += 1
+            continue
+
+        unordered = UNORDERED_LIST_RE.match(line)
+        ordered = ORDERED_LIST_RE.match(line)
+        if unordered or ordered:
+            flush_paragraph()
+            flush_quote()
+            is_ordered = ordered is not None
+            content = (ordered or unordered).group(1).strip()
+            if list_items and list_ordered != is_ordered:
+                flush_list()
+            list_ordered = is_ordered
+            list_items.append(content)
+            index += 1
+            continue
+
+        flush_list()
+        paragraph.append(line)
+        index += 1
+
+    flush_list()
+    flush_paragraph()
+    flush_quote()
+    if in_code and code_lines:
+        html_lines.append(render_zsxq_code_block("\n".join(code_lines)))
+    return "\n".join(apply_zsxq_spacing(html_lines))
+
+
+def render_zsxq_html(
+    title: str,
+    markdown: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    # No auto-prepended lead/route copy: any opening paragraph should be
+    # authored in the source so the package only ships what the user wrote.
+    body = render_zsxq_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    safe_title = html.escape(title)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title} - 知识星球</title>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
+
+
+def render_wechat_html(
+    title: str,
+    markdown: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    """Render a WeChat-friendly article body.
+
+    Intentionally no auto-generated title bar and no "本文路线" outline:
+    the WeChat editor already has its own title field, and any opening
+    paragraph the author wants should be written explicitly in the source
+    Markdown. Auto-prepending decoration was noise the user had to delete
+    every time.
+    """
+    body = render_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
     safe_title = html.escape(title)
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -250,10 +1962,8 @@ def render_wechat_html(title: str, markdown: str) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{safe_title}</title>
 </head>
-<body style="margin:0;background:#f5f1ea;padding:24px 0;">
-  <article style="max-width:720px;margin:0 auto;background:#fffdf8;padding:28px 22px;color:#2f2a24;font-family:Georgia,'PingFang SC','Hiragino Sans GB',serif;">
-    <h1 style="font-size:26px;line-height:1.35;margin:0;color:#2f2a24;font-weight:700;">{safe_title}</h1>
-    <div style="width:48px;height:3px;background:#b7791f;margin:16px 0 28px;"></div>
+<body style="box-sizing:border-box;margin:0;background:#f7f3ec;padding:18px 0;overflow-x:hidden;">
+  <article style="width:calc(100% - 40px);max-width:720px;box-sizing:border-box;margin:0 auto;background:#ffffff;padding:30px 22px 36px;color:#222222;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;">
     {body}
   </article>
 </body>
@@ -270,9 +1980,9 @@ def render_preview_html(title: str, wechat_html: str, report_path: str) -> str:
 <body style="margin:0;background:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;">
   <header style="padding:16px 20px;background:#111827;color:#fff;">
     <strong>{safe_title}</strong>
-    <span style="margin-left:12px;color:#cbd5e1;">Report: {html.escape(report_path)}</span>
+    <span style="margin-left:12px;color:#cbd5e1;">本地图预览：wechat-preview.html · 一次性粘贴试用：wechat-embedded.html · 兜底粘贴版：wechat.html · Report: {html.escape(report_path)}</span>
   </header>
-  <iframe src="wechat.html" style="display:block;width:100%;height:calc(100vh - 56px);border:0;background:#fff;"></iframe>
+  <iframe src="wechat-preview.html" style="display:block;width:100%;height:calc(100vh - 56px);border:0;background:#fff;"></iframe>
   <details style="padding:16px 20px;background:#fff;"><summary>wechat.html source</summary><pre>{escaped}</pre></details>
 </body>
 </html>
@@ -286,8 +1996,183 @@ def render_copy_html(title: str) -> str:
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Copy - {safe_title}</title></head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;padding:24px;">
   <h1>{safe_title}</h1>
-  <p>首版只生成发布包文件，不自动写入系统剪贴板。请先打开 <a href="preview.html">preview.html</a> 检查效果。</p>
+  <p>优先使用 <a href="wechat.html">wechat.html</a>，它把本地图片转成 Base64 内嵌，适合一次性复制粘贴到公众号。若平台丢图，再用 <a href="image-manifest.md">image-manifest.md</a> 和 assets/ 兜底。</p>
   <iframe src="wechat.html" style="display:block;width:100%;height:80vh;border:1px solid #ddd;"></iframe>
+</body>
+</html>
+"""
+
+
+def build_platform_report(zhihu_remote_enabled: bool = False) -> dict[str, dict[str, object]]:
+    report: dict[str, dict[str, object]] = {}
+    for platform, profile in PLATFORM_PROFILES.items():
+        recommended = profile["recommended"]
+        image_mode = profile["html_image_mode"]
+        image_strategy = profile["image_strategy"]
+        if platform == "zhihu" and zhihu_remote_enabled:
+            recommended = "platforms/zhihu.html"
+            image_mode = "remote"
+            image_strategy = (
+                "已提供 HTTPS 图片映射，复制 zhihu.html；图片以远程 URL 进入正文。"
+                "发布前仍需确认知乎是否已转存/显示每张图片。"
+            )
+        report[platform] = {
+            "label": profile["label"],
+            "recommended": recommended,
+            "fallback": profile["fallback"],
+            "html_image_mode": image_mode,
+            "editor_model": profile["editor_model"],
+            "image_strategy": image_strategy,
+            "code_strategy": profile["code_strategy"],
+            "notes": profile["notes"],
+            "sources": profile["sources"],
+        }
+    return report
+
+
+def render_platform_guide(title: str, zhihu_remote_enabled: bool = False) -> str:
+    report = build_platform_report(zhihu_remote_enabled=zhihu_remote_enabled)
+    lines = [
+        f"# {title} 平台发布指南",
+        "",
+        "这个文件说明 `platforms/` 下每个平台应该优先使用哪个版本，以及发布前需要手工复核什么。",
+        "",
+        "| 平台 | 首选文件 | 兜底文件 | 核心处理 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for platform in PLATFORMS:
+        profile = report[platform]
+        lines.append(
+            f"| {profile['label']} | `{profile['recommended']}` | `{profile['fallback']}` | {profile['image_strategy']} |"
+        )
+
+    lines.extend(["", "## 平台细节", ""])
+    for platform in PLATFORMS:
+        profile = report[platform]
+        lines.append(f"### {profile['label']}")
+        lines.append("")
+        lines.append(f"- 编辑器判断：{profile['editor_model']}")
+        lines.append(f"- 代码处理：{profile['code_strategy']}")
+        for note in profile["notes"]:  # type: ignore[index]
+            lines.append(f"- 注意：{note}")
+        lines.append("- 来源：")
+        for source in profile["sources"]:  # type: ignore[index]
+            if isinstance(source, dict):
+                lines.append(f"  - [{source['label']}]({source['url']})")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## 知乎图片 URL 映射",
+            "",
+            "知乎真实编辑器会拒收 `data:image/...` Base64 图片。先用 `--zhihu-cookie-file` 或 `--remote-image-map` 生成带 HTTPS 图片 URL 的 `platforms/zhihu.html`；如果当前文件仍是占位符，再按 `image-manifest.md` 从 `assets/` 手工补传：",
+            "",
+            "1. 首选：重新运行 `build_publish_package.py --zhihu-cookie-file ~/.zhihu-cli/cookies.json --overwrite`，用知乎登录 Cookie 批量上传图片并重写 `platforms/zhihu.html`。",
+            "2. 兜底：运行 `upload_mdnice_images.py`，用 Markdown Nice 登录 JWT 批量上传图片；或把已经上传过图片的 HTML/Markdown 保存成 `mdnice-output.html`，再运行 `extract_remote_image_map.py` 按顺序抽取 URL。",
+            "3. 重新运行 `build_publish_package.py --remote-image-map platforms/zhihu-image-map.json --overwrite`。",
+            "4. 复制更新后的 `platforms/zhihu.html` 到知乎正文编辑器。",
+            "",
+        ]
+    )
+
+    lines.extend(
+        [
+            "## 手工发布顺序",
+            "",
+            "1. 打开首选文件，选择正文区域复制到平台编辑器。",
+            "2. 先确认图片是否已随富文本进入编辑器；知乎若仍是占位符，或其他平台拒绝 Base64 图片，按 `image-manifest.md` 的顺序从 `assets/` 上传或拖入图片。",
+            "3. 检查代码块、标题层级、链接、图片位置和平台要求的标题/封面/标签/分类。",
+            "4. 先保存草稿或预览，再发布。",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def render_zsxq_quote_lab(title: str) -> str:
+    safe_title = html.escape(title)
+    samples = [
+        (
+            "A. 标准 HTML blockquote",
+            "复制下面渲染出的这一段。如果成功，说明知识星球接受标准 HTML 引用。",
+            "<blockquote><p><strong>引用测试 A：</strong>这是标准 blockquote + p 结构。</p></blockquote>",
+        ),
+        (
+            "B. 裸 blockquote",
+            "测试编辑器是否只接受没有段落包裹的 blockquote。",
+            "<blockquote><strong>引用测试 B：</strong>这是裸 blockquote 结构。</blockquote>",
+        ),
+        (
+            "C. ProseMirror/Tiptap 属性",
+            "测试知识星球底层编辑器是否识别 data-type 属性。",
+            '<blockquote data-type="blockquote"><p><strong>引用测试 C：</strong>这是带 data-type 的 blockquote。</p></blockquote>',
+        ),
+        (
+            "D. Slate/通用 data-block 属性",
+            "测试编辑器是否识别通用块类型属性。",
+            '<blockquote data-block="quote"><p><strong>引用测试 D：</strong>这是带 data-block 的 blockquote。</p></blockquote>',
+        ),
+        (
+            "E. div role blockquote",
+            "测试非 blockquote 标签但带 role 的结构。",
+            '<div role="blockquote"><p><strong>引用测试 E：</strong>这是 role=blockquote 的 div。</p></div>',
+        ),
+        (
+            "F. 视觉左边框段落",
+            "这不是原生引用，但能测试知识星球是否保留内联 border-left 样式。",
+            '<p style="border-left:4px solid #d0d7de;padding-left:12px;"><strong>引用测试 F：</strong>这是用样式模拟的引用。</p>',
+        ),
+    ]
+    sample_html = []
+    for label, note, body in samples:
+        sample_html.append(
+            "<section>"
+            f"<h2>{html.escape(label)}</h2>"
+            f"<p>{html.escape(note)}</p>"
+            f'<div class="sample">{body}</div>'
+            "</section>"
+        )
+
+    markdown_single = "> **引用测试 G：** 这是纯 Markdown 单行引用。"
+    markdown_multi = "> **引用测试 H：** 这是纯 Markdown 多行引用第一行。\n>\n> 第二行继续引用。"
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title} - 知识星球引用实验</title>
+  <style>
+    body {{ margin:0; padding:24px; color:#111827; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Arial,sans-serif; line-height:1.75; }}
+    main {{ max-width:820px; margin:0 auto; }}
+    h1 {{ font-size:28px; line-height:1.35; margin:0 0 8px; }}
+    h2 {{ font-size:18px; line-height:1.45; margin:28px 0 8px; }}
+    p {{ margin:0 0 12px; }}
+    .sample {{ margin:10px 0 18px; padding:14px 16px; border:1px solid #e5e7eb; background:#f9fafb; }}
+    textarea {{ width:100%; min-height:88px; box-sizing:border-box; padding:12px; border:1px solid #d1d5db; font-size:15px; line-height:1.7; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}
+    .hint {{ color:#4b5563; font-size:14px; }}
+  </style>
+</head>
+<body>
+<main>
+  <h1>{safe_title} - 知识星球原生引用实验</h1>
+  <p class="hint">逐个只复制灰框或文本框里的样本，粘贴到知识星球长文章编辑器。若某一项显示为平台原生引用块，记录对应字母；如果都失败，说明外部粘贴无法触发原生引用，只能用正文视觉引用或手动点工具栏引用按钮。</p>
+  {''.join(sample_html)}
+  <section>
+    <h2>G. 纯 Markdown 单行引用</h2>
+    <p>请点击文本框，Cmd+A / Ctrl+A 选中文本框内容后复制。这个会尽量以纯文本进入剪贴板。</p>
+    <textarea>{html.escape(markdown_single)}</textarea>
+  </section>
+  <section>
+    <h2>H. 纯 Markdown 多行引用</h2>
+    <p>测试知识星球是否在粘贴纯 Markdown 时解析多行 blockquote。</p>
+    <textarea>{html.escape(markdown_multi)}</textarea>
+  </section>
+  <section>
+    <h2>I. 当前稳定兜底</h2>
+    <p>这是当前主稿采用的视觉引用。它不是原生引用，但粘贴稳定。</p>
+    <div class="sample"><p><strong>▍引用测试 I：</strong>这是视觉引用兜底。</p></div>
+  </section>
+</main>
 </body>
 </html>
 """
@@ -402,8 +2287,10 @@ def write_text(path: Path, text: str) -> None:
 
 def build_next_steps(warnings: list[dict[str, object]]) -> list[str]:
     steps = [
-        "Open preview.html and inspect the WeChat rendering.",
-        "Use platforms/*.md for conservative platform-specific paste flows.",
+        "Open wechat.html in your browser to preview; copy/paste it into the WeChat Official Account editor.",
+        "For Zhihu/Toutiao/Zsxq/SMZDM, open platforms/<name>.html and paste into that platform's article editor (title is entered separately).",
+        "For Zhihu images, use --zhihu-cookie-file or --remote-image-map so zhihu.html contains HTTPS image URLs; otherwise replace the placeholders using image-manifest.md.",
+        "If another platform drops embedded images after paste, use image-manifest.md to upload or drag images from assets/ in the original order.",
     ]
     if warnings:
         steps.append("Review report.json warnings before publishing.")
@@ -417,6 +2304,11 @@ def build_package(
     strict: bool = False,
     table_mode: str = "auto",
     style: str = "magazine",
+    remote_image_map: Path | str | None = None,
+    zhihu_auto_upload: bool = True,
+    zhihu_cookie_file: Path | str | None = None,
+    open_after_build: bool = False,
+    open_target: str = "zhihu",
 ) -> dict[str, object]:
     source = Path(source_path).resolve()
     output = Path(output_dir).resolve()
@@ -426,6 +2318,7 @@ def build_package(
         raise ValueError("Only --style magazine is supported in the first version.")
     if table_mode not in {"auto", "always", "never"}:
         raise ValueError("--table-mode must be auto, always, or never")
+    remote_lookup = load_remote_image_map(remote_image_map)
 
     ensure_output_dir(output, overwrite=overwrite)
     source_text = source.read_text(encoding="utf-8-sig")
@@ -444,30 +2337,144 @@ def build_package(
         codes = ", ".join(str(item["code"]) for item in warnings)
         raise RuntimeError(f"Strict mode failed with warnings: {codes}")
 
-    wechat_html = render_wechat_html(title, normalized)
+    image_manifest = extract_image_manifest(normalized)
+
+    # WeChat: only emit the one paste-ready Base64 file. The placeholder /
+    # preview / copy-helper files were noisy intermediates that the user
+    # rarely opened.
+    wechat_html = render_wechat_html(title, normalized, image_mode="data", asset_base_dir=output)
     write_text(output / "wechat.html", wechat_html)
-    write_text(output / "preview.html", render_preview_html(title, wechat_html, "report.json"))
-    write_text(output / "copy.html", render_copy_html(title))
+
+    outputs: list[str] = ["wechat.html"]
+
+    # Optionally attempt to auto-upload images to Zhihu so we can emit the
+    # remote-image version of zhihu.html. This only kicks in when the user
+    # supplied a cookie file (or one exists at the default path), so the
+    # build keeps working offline.
+    zhihu_remote_missing: list[str] = []
+    zhihu_remote_enabled = False
+    zhihu_upload_error: str | None = None
+    if not remote_lookup and zhihu_auto_upload and image_manifest:
+        attempted_map, zhihu_upload_error = try_upload_zhihu_images(
+            image_manifest=image_manifest,
+            asset_base_dir=output,
+            cookie_file=zhihu_cookie_file,
+        )
+        if attempted_map:
+            remote_lookup = attempted_map
+            warnings.append(warning(
+                "zhihu_auto_upload",
+                f"Auto-uploaded {len(attempted_map) // 3} images to Zhihu using cookie file.",
+            ))
+        if zhihu_upload_error:
+            warnings.append(warning(
+                "zhihu_auto_upload_failed",
+                zhihu_upload_error,
+            ))
 
     platform_outputs: list[str] = []
     platform_markdown = rewrite_asset_paths_for_platforms(normalized)
     for platform in PLATFORMS:
-        relative = f"platforms/{platform}.md"
-        write_text(output / relative, markdown_for_platform(platform_markdown, platform))
-        platform_outputs.append(relative)
+        if platform not in RICH_HTML_PLATFORMS:
+            continue
+        platform_content = markdown_for_platform(platform_markdown, platform)
+        html_relative = f"platforms/{platform}.html"
 
-    outputs = ["wechat.html", "preview.html", "copy.html", *platform_outputs]
+        if platform == "zhihu" and remote_lookup:
+            # Inline the uploaded HTTPS URLs and emit a single zhihu.html that
+            # can be pasted directly without manual image upload.
+            remote_content, zhihu_remote_missing = rewrite_images_to_remote_urls(platform_content, remote_lookup)
+            if not zhihu_remote_missing:
+                write_text(
+                    output / html_relative,
+                    render_platform_html(
+                        "zhihu",
+                        title,
+                        remote_content,
+                        image_mode="inline",
+                        asset_base_dir=output / "platforms",
+                    ),
+                )
+                zhihu_remote_enabled = True
+                platform_outputs.append(html_relative)
+                continue
+
+        image_mode = str(PLATFORM_PROFILES[platform].get("html_image_mode", "placeholder"))
+        write_text(
+            output / html_relative,
+            render_platform_html(
+                platform,
+                title,
+                platform_content,
+                image_mode=image_mode,
+                asset_base_dir=output / "platforms",
+            ),
+        )
+        platform_outputs.append(html_relative)
+
+    outputs.extend(platform_outputs)
+
+    if image_manifest and not zhihu_remote_enabled:
+        warnings.append(warning(
+            "zhihu_image_upload_required",
+            "Zhihu rejects Base64 image paste in the real editor; zhihu.html uses placeholders until images are uploaded through the Zhihu image API or supplied via --remote-image-map.",
+        ))
+
+    # Always ship a small image order list when local images exist. Zhihu needs
+    # uploaded HTTPS images, and other editors may still drop embedded images.
+    if image_manifest:
+        write_text(output / "image-manifest.md", render_image_manifest(title, image_manifest))
+        outputs.append("image-manifest.md")
+
+    platform_report = build_platform_report(zhihu_remote_enabled=zhihu_remote_enabled)
+
     report: dict[str, object] = {
         "source": str(source),
         "title": title,
         "outputs": outputs,
         "assets": assets,
+        "image_manifest": image_manifest,
+        "platforms": platform_report,
+        "remote_images": {
+            "map": str(Path(remote_image_map).resolve()) if remote_image_map else None,
+            "mapped": len(remote_lookup),
+            "zhihu_missing": zhihu_remote_missing,
+        },
         "tables": table_report,
         "warnings": warnings,
         "next_steps": build_next_steps(warnings),
     }
     write_text(output / "report.json", json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+
+    if open_after_build:
+        target_map = {
+            "zhihu": "platforms/zhihu.html",
+            "wechat": "wechat.html",
+            "toutiao": "platforms/toutiao.html",
+            "zsxq": "platforms/zsxq.html",
+            "smzdm": "platforms/smzdm.html",
+        }
+        chosen_rel = target_map.get(open_target, "platforms/zhihu.html")
+        chosen_path = output / chosen_rel
+        if chosen_path.exists():
+            _open_in_browser(chosen_path)
+            report["opened"] = str(chosen_path)
     return report
+
+
+def _open_in_browser(path: Path) -> None:
+    """Launch the host OS browser/file viewer for the given HTML file."""
+    uri = path.resolve().as_uri()
+    if sys.platform == "darwin":
+        cmd = ["open", str(path)]
+    elif sys.platform.startswith("win"):
+        cmd = ["cmd", "/c", "start", "", uri]
+    else:
+        cmd = ["xdg-open", str(path)]
+    try:
+        subprocess.run(cmd, check=False, capture_output=True)
+    except Exception as exc:
+        print(f"[open] failed to open {path}: {exc}", file=sys.stderr)
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -488,6 +2495,40 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         default="magazine",
         help="Visual style. First version supports magazine.",
     )
+    parser.add_argument(
+        "--remote-image-map",
+        type=Path,
+        help="Optional JSON map from local asset paths to HTTPS image URLs. When provided, zhihu.html uses the remote URLs directly.",
+    )
+    parser.add_argument(
+        "--zhihu-cookie-file",
+        type=Path,
+        help="Path to a Zhihu cookie JSON file (defaults to ~/.zhihu-cli/cookies.json if it exists). When present, the build attempts to auto-upload images to Zhihu so zhihu.html can ship with real HTTPS URLs.",
+    )
+    parser.add_argument(
+        "--no-zhihu-auto-upload",
+        action="store_true",
+        help="Disable the automatic Zhihu image upload step even when a cookie file exists.",
+    )
+    parser.add_argument(
+        "--open",
+        dest="open_after_build",
+        action="store_true",
+        default=True,
+        help="After build, open the chosen HTML in the system browser (default).",
+    )
+    parser.add_argument(
+        "--no-open",
+        dest="open_after_build",
+        action="store_false",
+        help="Do not auto-open any HTML after build.",
+    )
+    parser.add_argument(
+        "--open-target",
+        choices=["zhihu", "wechat", "toutiao", "zsxq", "smzdm"],
+        default="zhihu",
+        help="Which HTML to open after build (default: zhihu).",
+    )
     return parser.parse_args(argv)
 
 
@@ -502,6 +2543,11 @@ def main(argv: list[str] | None = None) -> int:
             strict=args.strict,
             table_mode=args.table_mode,
             style=args.style,
+            remote_image_map=args.remote_image_map,
+            zhihu_auto_upload=not args.no_zhihu_auto_upload,
+            zhihu_cookie_file=args.zhihu_cookie_file,
+            open_after_build=args.open_after_build,
+            open_target=args.open_target,
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
