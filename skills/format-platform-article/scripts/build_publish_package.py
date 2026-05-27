@@ -13,8 +13,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
-from urllib.parse import unquote
+from typing import Callable, Optional
+from urllib.parse import unquote, urlparse
 
 
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -26,6 +29,10 @@ TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\
 RAW_HTML_RISK_RE = re.compile(r"<\s*(script|style|iframe|object|embed)\b|class\s*=", re.IGNORECASE)
 REMOTE_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 LARGE_IMAGE_BYTES = 2 * 1024 * 1024
+REMOTE_IMAGE_TIMEOUT_SECONDS = 30
+REMOTE_IMAGE_MAX_BYTES = 25 * 1024 * 1024
+REMOTE_IMAGE_USER_AGENT = "format-platform-article/1.0 (+https://factory.ai)"
+REMOTE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"}
 PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm")
 RICH_HTML_PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm")
 PLATFORM_PROFILES: dict[str, dict[str, object]] = {
@@ -205,21 +212,130 @@ def unique_asset_name(assets_dir: Path, source: Path) -> str:
     return candidate
 
 
+def _remote_image_extension(url: str, content_type: str | None) -> str:
+    """Pick a sane file extension for a downloaded image.
+
+    Notion presigned URLs include the original filename in the path (e.g.
+    `.../image.png?X-Amz-...`), so the URL path almost always carries a
+    correct extension. We still fall back to the response Content-Type and
+    finally to `.png` so the asset name is always usable.
+    """
+    try:
+        path = urlparse(url).path
+    except ValueError:
+        path = ""
+    ext = Path(path).suffix.lower()
+    if ext in REMOTE_IMAGE_EXTENSIONS:
+        return ext
+    if content_type:
+        primary = content_type.split(";", 1)[0].strip().lower()
+        guess = mimetypes.guess_extension(primary) or ""
+        if guess == ".jpe":
+            guess = ".jpg"
+        if guess in REMOTE_IMAGE_EXTENSIONS:
+            return guess
+    return ".png"
+
+
+def _unique_remote_asset_name(assets_dir: Path, index: int, ext: str) -> str:
+    candidate = f"remote_{index:02d}{ext}"
+    counter = 2
+    while (assets_dir / candidate).exists():
+        candidate = f"remote_{index:02d}-{counter}{ext}"
+        counter += 1
+    return candidate
+
+
+def download_remote_image(url: str, assets_dir: Path, index: int) -> Path | None:
+    """Download a remote image into ``assets_dir`` and return the local path.
+
+    Returns ``None`` when the download fails for any reason (timeout, HTTP
+    error, response too large, malformed URL). The caller is expected to
+    fall back to leaving the original Markdown URL in place and emit a
+    descriptive warning so the user can intervene.
+    """
+    if not REMOTE_RE.match(url):
+        return None
+    try:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": REMOTE_IMAGE_USER_AGENT,
+                "Accept": "image/*,application/octet-stream;q=0.9,*/*;q=0.1",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=REMOTE_IMAGE_TIMEOUT_SECONDS) as response:
+            content_type = response.headers.get("Content-Type")
+            data = response.read(REMOTE_IMAGE_MAX_BYTES + 1)
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+    if not data or len(data) > REMOTE_IMAGE_MAX_BYTES:
+        return None
+
+    ext = _remote_image_extension(url, content_type)
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    asset_name = _unique_remote_asset_name(assets_dir, index, ext)
+    output = assets_dir / asset_name
+    output.write_bytes(data)
+    return output
+
+
 def rewrite_images_to_assets(
     markdown: str,
     source_dir: Path,
     assets_dir: Path,
+    download_remote: bool = True,
+    remote_downloader: Optional[Callable[[str, Path, int], Optional[Path]]] = None,
 ) -> tuple[str, list[dict[str, str]], list[dict[str, object]]]:
+    """Materialize every Markdown image reference into ``assets_dir``.
+
+    Local images are copied. Remote (`http(s)://...`) URLs are fetched when
+    ``download_remote`` is True so wechat/toutiao/zsxq/smzdm.html can embed
+    them as Base64 and zhihu.html can reference a stable local path. This is
+    especially important for Notion exports whose S3 presigned URLs expire
+    within an hour and would otherwise turn every cross-platform output
+    into a pile of broken `<img>` tags.
+    """
     copied: list[dict[str, str]] = []
     warnings: list[dict[str, object]] = []
     assets_dir.mkdir(parents=True, exist_ok=True)
+    fetch = remote_downloader or download_remote_image
+    remote_counter = {"value": 0}
 
     def replace(match: re.Match[str]) -> str:
         alt = match.group(1)
         raw_target = clean_image_target(match.group(2))
         if REMOTE_RE.match(raw_target):
-            warnings.append(warning("remote_image", "Remote image was left unchanged.", target=raw_target))
-            return match.group(0)
+            if not download_remote:
+                warnings.append(warning("remote_image", "Remote image was left unchanged.", target=raw_target))
+                return match.group(0)
+            remote_counter["value"] += 1
+            local = fetch(raw_target, assets_dir, remote_counter["value"])
+            if local is None:
+                warnings.append(
+                    warning(
+                        "remote_image_download_failed",
+                        "Failed to download remote image; leaving URL in place.",
+                        target=raw_target,
+                    )
+                )
+                return match.group(0)
+            asset_name = local.name
+            try:
+                size = local.stat().st_size
+            except OSError:
+                size = 0
+            if size > LARGE_IMAGE_BYTES:
+                warnings.append(
+                    warning(
+                        "large_image",
+                        "Image is larger than 2 MB.",
+                        source=raw_target,
+                        output=f"assets/{asset_name}",
+                    )
+                )
+            copied.append({"source": raw_target, "output": f"assets/{asset_name}"})
+            return f"![{alt}](assets/{asset_name})"
 
         source = (source_dir / raw_target).resolve()
         if not source.exists():
@@ -2325,6 +2441,10 @@ def build_next_steps(warnings: list[dict[str, object]]) -> list[str]:
         "For Zhihu images, use --zhihu-cookie-file or --remote-image-map so zhihu.html contains HTTPS image URLs; otherwise replace the placeholders using image-manifest.md.",
         "If another platform drops embedded images after paste, use image-manifest.md to upload or drag images from assets/ in the original order.",
     ]
+    if any(item.get("code") == "remote_image_download_failed" for item in warnings):
+        steps.append(
+            "Some remote images failed to download (e.g. expired Notion S3 presigned URLs). Refresh the source export, save the images into the same folder as your Markdown, and re-run the build."
+        )
     if warnings:
         steps.append("Review report.json warnings before publishing.")
     return steps
@@ -2342,6 +2462,8 @@ def build_package(
     zhihu_cookie_file: Path | str | None = None,
     open_after_build: bool = False,
     open_target: str = "zhihu",
+    download_remote_images: bool = True,
+    remote_downloader: Optional[Callable[[str, Path, int], Optional[Path]]] = None,
 ) -> dict[str, object]:
     source = Path(source_path).resolve()
     output = Path(output_dir).resolve()
@@ -2356,7 +2478,13 @@ def build_package(
     ensure_output_dir(output, overwrite=overwrite)
     source_text = source.read_text(encoding="utf-8-sig")
     title, body, warnings = extract_title_and_body(source_text, source)
-    normalized, assets, image_warnings = rewrite_images_to_assets(body, source.parent, output / "assets")
+    normalized, assets, image_warnings = rewrite_images_to_assets(
+        body,
+        source.parent,
+        output / "assets",
+        download_remote=download_remote_images,
+        remote_downloader=remote_downloader,
+    )
     warnings.extend(image_warnings)
     warnings.extend(detect_raw_html_warnings(normalized))
 
@@ -2544,6 +2672,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Disable the automatic Zhihu image upload step even when a cookie file exists.",
     )
     parser.add_argument(
+        "--no-download-remote-images",
+        action="store_true",
+        help="Disable automatically downloading remote (http(s)) images into assets/. By default the build fetches every Markdown image URL (including Notion S3 presigned URLs that expire within an hour) so each platform HTML ends up with stable local assets instead of expiring links.",
+    )
+    parser.add_argument(
         "--open",
         dest="open_after_build",
         action="store_true",
@@ -2581,6 +2714,7 @@ def main(argv: list[str] | None = None) -> int:
             zhihu_cookie_file=args.zhihu_cookie_file,
             open_after_build=args.open_after_build,
             open_target=args.open_target,
+            download_remote_images=not args.no_download_remote_images,
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)

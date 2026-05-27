@@ -108,6 +108,7 @@ Do not expect legacy intermediate files such as `preview.html`, `copy.html`, `we
 - `--remote-image-map /path/to/map.json`: optional JSON map from generated asset paths to HTTPS image URLs. When supplied and complete, Zhihu output is rewritten into `platforms/zhihu.html` with remote HTTPS images.
 - `--zhihu-cookie-file /path/to/cookies.json`: optional Zhihu cookie JSON file. Defaults to `~/.zhihu-cli/cookies.json` when present. If valid, the build attempts to upload local images to Zhihu and rewrite `zhihu.html` with HTTPS image URLs.
 - `--no-zhihu-auto-upload`: skip optional Zhihu upload; `zhihu.html` will use image placeholders instead of Base64.
+- `--no-download-remote-images`: skip downloading remote (`http(s)`) Markdown images into `assets/`. By default the build fetches every remote URL (including Notion S3 presigned URLs that expire within an hour) so the cross-platform HTML files keep working after the original URL dies. Disable only if you know the remote URLs are stable and you want zero outbound traffic.
 - `--open` (default) / `--no-open`: auto-open the chosen platform HTML in the system browser after build, so you can copy + paste directly.
 - `--open-target zhihu|wechat|toutiao|zsxq|smzdm`: which HTML to auto-open. Defaults to `zhihu` since that is the only platform that requires uploaded images for paste-to-work.
 
