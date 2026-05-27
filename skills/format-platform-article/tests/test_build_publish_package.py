@@ -47,6 +47,136 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertEqual(copied[0]["output"], "assets/sample.png")
             self.assertEqual(warnings, [])
 
+    def test_rewrite_images_to_assets_downloads_remote_image_by_default(self):
+        # Notion exports embed presigned S3 URLs that expire within an hour;
+        # the builder must materialize them into assets/ so the cross-platform
+        # HTML files keep working after the URL expires.
+        png_bytes = b"\x89PNG\r\n\x1a\nfakepng"
+        fixture_dir = Path(__file__).resolve().parent / "fixtures"
+
+        def fake_downloader(url, assets_dir, index):
+            self.assertTrue(url.startswith("https://prod-files-secure.s3"))
+            self.assertEqual(index, 1)
+            target = assets_dir / f"remote_{index:02d}.png"
+            target.write_bytes(png_bytes)
+            return target
+
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = Path(tmp) / "assets"
+            markdown, copied, warnings = build_publish_package.rewrite_images_to_assets(
+                "![alt](https://prod-files-secure.s3.us-west-2.amazonaws.com/abc/image.png?X-Amz-Expires=3600)",
+                fixture_dir,
+                assets,
+                remote_downloader=fake_downloader,
+            )
+
+            self.assertEqual(markdown, "![alt](assets/remote_01.png)")
+            self.assertTrue((assets / "remote_01.png").exists())
+            self.assertEqual(assets.joinpath("remote_01.png").read_bytes(), png_bytes)
+            self.assertEqual(copied[0]["output"], "assets/remote_01.png")
+            self.assertEqual(warnings, [])
+
+    def test_rewrite_images_to_assets_emits_warning_when_remote_download_fails(self):
+        fixture_dir = Path(__file__).resolve().parent / "fixtures"
+
+        def failing_downloader(url, assets_dir, index):
+            return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = Path(tmp) / "assets"
+            original = "![alt](https://prod-files-secure.s3.us-west-2.amazonaws.com/abc/image.png?X-Amz-Expires=3600)"
+            markdown, copied, warnings = build_publish_package.rewrite_images_to_assets(
+                original,
+                fixture_dir,
+                assets,
+                remote_downloader=failing_downloader,
+            )
+
+            self.assertEqual(markdown, original)
+            self.assertEqual(copied, [])
+            self.assertEqual(len(warnings), 1)
+            self.assertEqual(warnings[0]["code"], "remote_image_download_failed")
+            self.assertIn("prod-files-secure", warnings[0]["target"])
+
+    def test_rewrite_images_to_assets_keeps_legacy_behavior_when_download_disabled(self):
+        fixture_dir = Path(__file__).resolve().parent / "fixtures"
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = Path(tmp) / "assets"
+            original = "![alt](https://example.com/remote.png)"
+            markdown, copied, warnings = build_publish_package.rewrite_images_to_assets(
+                original,
+                fixture_dir,
+                assets,
+                download_remote=False,
+            )
+
+            self.assertEqual(markdown, original)
+            self.assertEqual(copied, [])
+            self.assertEqual(len(warnings), 1)
+            self.assertEqual(warnings[0]["code"], "remote_image")
+
+    def test_remote_image_extension_handles_notion_presigned_urls(self):
+        ext = build_publish_package._remote_image_extension(
+            "https://prod-files-secure.s3.us-west-2.amazonaws.com/abc/image.png?X-Amz-Expires=3600",
+            "binary/octet-stream",
+        )
+
+        self.assertEqual(ext, ".png")
+
+    def test_remote_image_extension_falls_back_to_content_type(self):
+        ext = build_publish_package._remote_image_extension(
+            "https://cdn.example.com/blob?token=xyz",
+            "image/jpeg",
+        )
+
+        self.assertEqual(ext, ".jpg")
+
+    def test_build_package_downloads_remote_images_into_assets(self):
+        # End-to-end smoke test: the build pipeline should call the injected
+        # remote_downloader, copy bytes into assets/, and emit an HTML that
+        # references the new local path instead of the original URL.
+        fixture = Path(__file__).resolve().parent / "fixtures" / "article.md"
+        png_bytes = b"\x89PNG\r\n\x1a\nfakepng"
+
+        def fake_downloader(url, assets_dir, index):
+            target = assets_dir / f"remote_{index:02d}.png"
+            target.write_bytes(png_bytes)
+            return target
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "article.publish"
+            report = build_publish_package.build_package(
+                fixture,
+                output,
+                overwrite=False,
+                strict=False,
+                table_mode="never",
+                style="magazine",
+                zhihu_auto_upload=False,
+                remote_downloader=fake_downloader,
+            )
+
+            # The remote image in the fixture must now live under assets/.
+            self.assertTrue((output / "assets" / "remote_01.png").exists())
+            asset_paths = {a["output"] for a in report["assets"]}
+            self.assertIn("assets/remote_01.png", asset_paths)
+
+            # No remote-leftover warnings should be emitted.
+            warning_codes = [item["code"] for item in report["warnings"]]
+            self.assertNotIn("remote_image", warning_codes)
+            self.assertNotIn("remote_image_download_failed", warning_codes)
+
+            # WeChat embeds the new asset as Base64 (not the original https URL).
+            wechat_html = (output / "wechat.html").read_text(encoding="utf-8")
+            self.assertNotIn("example.com/remote.png", wechat_html)
+            self.assertIn("data:image/png;base64,", wechat_html)
+
+            # Zhihu's placeholder must reference the local asset, not the
+            # original (often-expiring) URL.
+            zhihu_html = (output / "platforms" / "zhihu.html").read_text(encoding="utf-8")
+            self.assertNotIn("example.com/remote.png", zhihu_html)
+            self.assertIn("assets/remote_01.png", zhihu_html)
+
     def test_render_wechat_html_has_no_auto_header(self):
         # The user authors the title in the WeChat editor's title field and any
         # intro paragraph in the source Markdown. The renderer must NOT inject
@@ -658,6 +788,7 @@ class BuildPublishPackageTests(unittest.TestCase):
                 table_mode="never",
                 style="magazine",
                 zhihu_auto_upload=False,
+                download_remote_images=False,
             )
 
             self.assertEqual(result["title"], "多平台发布测试文章")
