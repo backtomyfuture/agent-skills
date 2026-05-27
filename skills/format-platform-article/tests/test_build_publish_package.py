@@ -177,6 +177,84 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertNotIn("example.com/remote.png", zhihu_html)
             self.assertIn("assets/remote_01.png", zhihu_html)
 
+    def test_blockquote_with_callout_marker_renders_as_callout_badge(self):
+        # `> ⚠️ **注意** ：...` is the common Notion / source pattern. The
+        # WeChat renderer must NOT show this as a literary curly-quote block —
+        # those should be reserved for actual citations. Callout markers
+        # inside a blockquote should render with the same badge layout as a
+        # bare `⚠️ ...` paragraph, and the body must not duplicate the badge
+        # label (no leftover "**注意**：" prefix).
+        rendered = build_publish_package.render_wechat_html(
+            "标题",
+            "> ⚠️  **注意** ：这个价格可能是限时机制，建议先试试，抓紧窗口期。",
+        )
+
+        # Badge style of render_callout — orange small caps label.
+        self.assertIn("background:#fdf6ec", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
+        self.assertIn("letter-spacing:2px;text-transform:uppercase", rendered)
+        self.assertIn("注意", rendered)
+        # Body keeps the content but drops the redundant **注意** ： prefix.
+        self.assertIn("这个价格可能是限时机制", rendered)
+        self.assertNotIn("**注意**", rendered)
+        # No literary curly-quote glyph or italic when it is actually a callout.
+        self.assertNotIn("&ldquo;", rendered)
+        self.assertNotIn("font-style:italic", rendered)
+
+    def test_notion_style_callout_with_emoji_and_nested_quote_marker(self):
+        # Notion exports callouts as `> <emoji> >  **标签** ：body`. The renderer
+        # must:
+        # - treat the leading emoji as a callout marker (no literary curly-quote),
+        # - strip Notion's second `>` separator so it does not show up as text,
+        # - promote the bold prefix into the badge label (so "震撼" becomes the
+        #   badge instead of being shown twice — once as bold text, once not),
+        # - never leak the `>` character or the literal `**实测震撼**` into the
+        #   body of the rendered HTML.
+        rendered = build_publish_package.render_wechat_html(
+            "标题",
+            "> 😱 >  **实测震撼** ：刚上去看了一眼，吓我一跳——「82,000,000,000」！",
+        )
+
+        self.assertIn("background:#fdf6ec", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
+        # Badge shows the emoji + the bold-promoted custom label.
+        self.assertIn("😱", rendered)
+        self.assertIn("实测震撼", rendered)
+        # Body contains the real content, without the Notion artifacts.
+        self.assertIn("刚上去看了一眼", rendered)
+        self.assertIn("82,000,000,000", rendered)
+        self.assertNotIn("**实测震撼**", rendered)
+        self.assertNotIn("&gt;", rendered)
+        self.assertNotIn("&ldquo;", rendered)
+        self.assertNotIn("font-style:italic", rendered)
+
+    def test_notion_style_callout_gift_marker_uses_custom_bold_label(self):
+        rendered = build_publish_package.render_wechat_html(
+            "标题",
+            "> 🎁 >  **福利** ：我的 Max 套餐送了 820 亿 Token，欢迎加小圈领取 ⬇️",
+        )
+
+        self.assertIn("🎁", rendered)
+        self.assertIn("福利", rendered)
+        self.assertIn("820 亿 Token", rendered)
+        self.assertIn("欢迎加小圈领取", rendered)
+        self.assertNotIn("**福利**", rendered)
+        self.assertNotIn("&gt;", rendered)
+        self.assertNotIn("&ldquo;", rendered)
+
+    def test_blockquote_without_callout_marker_keeps_literary_quote(self):
+        # Plain blockquote (no warning marker) should still render with the
+        # editorial curly-quote treatment — this is a deliberate accent for
+        # actual quotations and must not be regressed by the callout fix.
+        rendered = build_publish_package.render_wechat_html(
+            "标题",
+            "> 把记忆当成资产，而不是日志。",
+        )
+
+        self.assertIn("&ldquo;", rendered)
+        self.assertIn("font-style:italic", rendered)
+        self.assertIn("把记忆当成资产", rendered)
+
     def test_render_wechat_html_has_no_auto_header(self):
         # The user authors the title in the WeChat editor's title field and any
         # intro paragraph in the source Markdown. The renderer must NOT inject
@@ -408,7 +486,10 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertIn("server: ", rendered)
         self.assertNotIn("[SERVER-IP]", rendered)
 
-    def test_render_platform_html_uses_conservative_editor_markup(self):
+    def test_render_platform_html_uses_unified_magazine_layout(self):
+        # All four richtext platforms share the WeChat magazine renderer so
+        # every visual fix (callout badges, code blocks, table styling, etc.)
+        # lands in one place.
         rendered = build_publish_package.render_platform_html(
             "zhihu",
             "标题",
@@ -417,27 +498,29 @@ class BuildPublishPackageTests(unittest.TestCase):
         )
 
         self.assertIn("<title>标题 - 知乎正文粘贴版</title>", rendered)
-        self.assertIn("<h2>小节</h2>", rendered)
-        self.assertIn("<blockquote><p>引用</p></blockquote>", rendered)
-        self.assertIn("<pre><code>", rendered)
+        self.assertIn("<article", rendered)
+        self.assertIn("<h2 style=", rendered)
+        self.assertIn("小节</h2>", rendered)
+        self.assertIn("引用", rendered)
+        self.assertIn("<pre", rendered)
+        self.assertIn("<code", rendered)
         self.assertIn("【UUID】", rendered)
         self.assertIn("【服务器IP】", rendered)
         self.assertIn("图片占位 1", rendered)
         self.assertIn("../assets/a.png", rendered)
+        # Zhihu still must not inline base64 images (its editor rejects them).
         self.assertNotIn("data:image/", rendered)
         self.assertNotIn("先说价值", rendered)
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("阅读方式", rendered)
         self.assertNotIn("知乎 粘贴版", rendered)
-        self.assertNotIn("data-placeholder", rendered)
         self.assertNotIn("本文路线", rendered)
-        self.assertNotIn("<p><br></p>", rendered)
-        self.assertNotIn("<article", rendered)
-        self.assertNotIn("style=", rendered)
-        self.assertNotIn("<table", rendered)
-        self.assertNotIn("<hr", rendered)
 
     def test_render_zsxq_html_can_embed_local_images_as_data_uri(self):
+        # Zsxq (and the other three richtext platforms) now share the WeChat
+        # magazine renderer, so callouts render as a labeled badge instead of
+        # the legacy ▍-prefixed paragraph, and tables keep their styled
+        # markup instead of being collapsed into <ul>.
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         rendered = build_publish_package.render_platform_html(
             "zsxq",
@@ -450,38 +533,30 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("先说价值", rendered)
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("阅读方式", rendered)
-        self.assertIn("<p><br></p>", rendered)
-        self.assertIn("<h2>小节</h2>", rendered)
-        self.assertIn("<strong>▍⚠️ 注意：</strong>注意这件事。", rendered)
-        self.assertIn("<ul><li><strong>连接失败</strong><br><strong>解决：</strong>检查端口</li></ul>", rendered)
-        self.assertIn("<pre><code>", rendered)
+        self.assertIn("<article", rendered)
+        self.assertIn("<h2 style=", rendered)
+        self.assertIn("小节</h2>", rendered)
+        # ⚠️ callout renders as a labeled badge (warm cream background, orange
+        # left rule) — not the old ▍-prefixed plain paragraph.
+        self.assertIn("background:#fdf6ec", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
+        self.assertIn("注意这件事", rendered)
+        # Tables stay as styled HTML tables for visual consistency with WeChat.
+        self.assertIn("<table", rendered)
+        self.assertIn("连接失败", rendered)
+        self.assertIn("检查端口", rendered)
+        self.assertIn("<pre", rendered)
         self.assertIn("【服务器IP】", rendered)
         self.assertIn('src="data:image/png;base64,', rendered)
         self.assertIn("<img", rendered)
         self.assertNotIn("图片占位 1", rendered)
         self.assertNotIn("media/sample.png", rendered)
         self.assertNotIn("知识星球 粘贴版", rendered)
-        self.assertNotIn("style=", rendered)
-        self.assertNotIn("<table", rendered)
-        self.assertNotIn("<hr", rendered)
-        self.assertNotIn("<article", rendered)
-
-    def test_render_zsxq_budget_table_as_compact_action_list(self):
-        rendered = build_publish_package.render_platform_html(
-            "zsxq",
-            "标题",
-            "| **阈值** | **动作** |\n| --- | --- |\n| 50% | 邮件提醒 |\n| 90% | 邮件提醒 |\n| 100% | 邮件提醒 + 检查资源 |",
-            image_mode="data",
-        )
-
-        self.assertIn("<li><strong>50%</strong>：邮件提醒</li>", rendered)
-        self.assertIn("<li><strong>90%</strong>：邮件提醒</li>", rendered)
-        self.assertIn("<li><strong>100%</strong>：邮件提醒 + 检查资源</li>", rendered)
-        self.assertNotIn("<strong><strong>动作</strong>：</strong>", rendered)
-        self.assertNotIn("动作：</strong>邮件提醒", rendered)
-        self.assertNotIn("<table", rendered)
 
     def test_render_zsxq_ordered_steps_keep_numbering_across_images(self):
+        # The magazine renderer keeps a contiguous list numbering when an
+        # image is embedded between two `1.` items so readers see 1/2/3/4
+        # instead of 1/1/1/1.
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         rendered = build_publish_package.render_platform_html(
             "zsxq",
@@ -491,11 +566,10 @@ class BuildPublishPackageTests(unittest.TestCase):
             asset_base_dir=fixture_dir,
         )
 
-        self.assertIn("<p><strong>1.</strong>&nbsp;第一步</p>", rendered)
-        self.assertIn("<p><strong>2.</strong>&nbsp;第二步</p>", rendered)
-        self.assertIn("<p><strong>3.</strong>&nbsp;第三步</p>", rendered)
-        self.assertIn("<p><strong>4.</strong>&nbsp;第四步</p>", rendered)
-        self.assertNotIn("<ol>", rendered)
+        self.assertIn("01.</span>第一步", rendered)
+        self.assertIn("02.</span>第二步", rendered)
+        self.assertIn("03.</span>第三步", rendered)
+        self.assertIn("04.</span>第四步", rendered)
         self.assertIn('src="data:image/png;base64,', rendered)
 
     def test_render_zsxq_gcp_vless_does_not_inject_lead(self):
@@ -507,13 +581,18 @@ class BuildPublishPackageTests(unittest.TestCase):
         )
 
         self.assertIn("今天使用 Google One 赠送的 GCP 余额搭建 VLESS Reality。", rendered)
-        self.assertIn("<h2>Step 1</h2>", rendered)
+        self.assertIn("<h2 style=", rendered)
+        self.assertIn("Step 1</h2>", rendered)
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("不用域名、不用证书", rendered)
         self.assertNotIn("预算提醒", rendered)
         self.assertNotIn("先说价值", rendered)
 
-    def test_render_zsxq_promotes_high_value_paragraphs_to_visual_quotes(self):
+    def test_render_zsxq_renders_high_value_paragraphs_with_magazine_emphasis(self):
+        # The magazine renderer keeps bold runs as inline accents (yellow
+        # underline) rather than promoting them to ▍-prefixed pull quotes;
+        # readers still get the visual lift, without losing the paragraph
+        # flow around the bold phrase.
         rendered = build_publish_package.render_platform_html(
             "zsxq",
             "标题",
@@ -525,12 +604,13 @@ class BuildPublishPackageTests(unittest.TestCase):
             image_mode="data",
         )
 
-        self.assertIn("<p><strong>▍</strong>&nbsp;整个流程：<strong>创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通</strong>。</p>", rendered)
-        self.assertIn("<p><strong>▍</strong>&nbsp;<strong>把这整段链接复制保存到本地</strong>。这就是你的客户端配置，不要发到任何公开平台。</p>", rendered)
-        self.assertIn("<p><strong>▍</strong>&nbsp;Clash Verge Rev <strong>不支持直接导入</strong> <code>vless://</code> <strong>链接</strong>，需要手动新建一个本地 YAML 配置文件。</p>", rendered)
-        self.assertIn("<p><strong>▍</strong>&nbsp;不用时停止实例；确定不用了，删除 VM、磁盘、静态 IP 和项目，别留闲置资源。</p>", rendered)
-        self.assertNotIn("<blockquote>", rendered)
-        self.assertIn("<p>普通操作说明继续用正文。</p>", rendered)
+        self.assertIn("整个流程：", rendered)
+        self.assertIn("创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通", rendered)
+        self.assertIn("把这整段链接复制保存到本地", rendered)
+        self.assertIn("不支持直接导入", rendered)
+        self.assertIn("普通操作说明继续用正文。", rendered)
+        self.assertNotIn("▍", rendered)
+        self.assertIn("color:#1a1a1a;font-weight:700", rendered)
 
     def test_render_zsxq_quote_lab_contains_native_quote_experiments(self):
         rendered = build_publish_package.render_zsxq_quote_lab("标题")
@@ -570,24 +650,24 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("先说价值", rendered)
         self.assertNotIn("阅读方式", rendered)
-        self.assertIn("<h2>小节</h2>", rendered)
-        self.assertIn("<blockquote><p><strong>⚠️ 注意：</strong>注意这件事。</p></blockquote>", rendered)
-        self.assertIn("<p><strong>1.</strong>&nbsp;第一步</p>", rendered)
-        self.assertIn("<p><strong>2.</strong>&nbsp;第二步</p>", rendered)
-        self.assertIn("<li><strong>50%</strong>：邮件提醒</li>", rendered)
-        self.assertIn("<li><strong>100%</strong>：邮件提醒 + 检查资源</li>", rendered)
-        self.assertIn("<pre><code>", rendered)
+        self.assertIn("<article", rendered)
+        self.assertIn("<h2 style=", rendered)
+        self.assertIn("小节</h2>", rendered)
+        # ⚠️ callout renders as the unified magazine badge.
+        self.assertIn("background:#fdf6ec", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
+        self.assertIn("注意这件事", rendered)
+        self.assertIn("01.</span>第一步", rendered)
+        self.assertIn("02.</span>第二步", rendered)
+        self.assertIn("<table", rendered)
+        self.assertIn("50%", rendered)
+        self.assertIn("邮件提醒 + 检查资源", rendered)
+        self.assertIn("<pre", rendered)
         self.assertIn("【服务器IP】", rendered)
         self.assertIn('src="data:image/png;base64,', rendered)
-        self.assertIn("<blockquote><p>整个流程", rendered)
-        self.assertNotIn("<p><br></p>", rendered)
+        self.assertIn("整个流程", rendered)
         self.assertNotIn("▍", rendered)
         self.assertNotIn("今日头条 粘贴版", rendered)
-        self.assertNotIn("<article", rendered)
-        self.assertNotIn("style=", rendered)
-        self.assertNotIn("<table", rendered)
-        self.assertNotIn("<hr", rendered)
-        self.assertNotIn("<ol>", rendered)
 
     def test_platform_paragraph_split_does_not_break_bold_markup(self):
         markdown = (
@@ -600,7 +680,13 @@ class BuildPublishPackageTests(unittest.TestCase):
             with self.subTest(platform=platform):
                 rendered = build_publish_package.render_platform_html(platform, "标题", markdown)
 
-                self.assertIn("<strong>冲着技术去的，不是冲着 title 去的。</strong>", rendered)
+                # The magazine renderer styles bold runs as a single inline
+                # <span> (warm dark color + soft yellow underline) rather than
+                # a bare <strong>. We just need to make sure the bold cluster
+                # is rendered as one piece — no leaked Markdown asterisks and
+                # no broken-across-tags content.
+                self.assertIn("冲着技术去的，不是冲着 title 去的。", rendered)
+                self.assertIn("color:#1a1a1a;font-weight:700", rendered)
                 self.assertNotIn("**冲着技术", rendered)
                 self.assertNotIn("** 这说明", rendered)
 
@@ -859,8 +945,10 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertIn("data:image/png;base64,", smzdm_html)
             self.assertNotIn("什么值得买 粘贴版", smzdm_html)
             self.assertNotIn("<h1", smzdm_html)
-            self.assertNotIn("<article", smzdm_html)
             self.assertNotIn("<header", smzdm_html)
+            # SMZDM now uses the same unified magazine wrapper as WeChat.
+            self.assertIn("<article", smzdm_html)
+            self.assertIn("什么值得买正文粘贴版", smzdm_html)
 
             zhihu_html = (output / "platforms" / "zhihu.html").read_text(encoding="utf-8")
             # Zhihu's real editor rejects Base64 images, so no-cookie output is
@@ -877,7 +965,9 @@ class BuildPublishPackageTests(unittest.TestCase):
 
             zsxq_html = (output / "platforms" / "zsxq.html").read_text(encoding="utf-8")
             self.assertIn("data:image/png;base64,", zsxq_html)
-            self.assertIn("▍", zsxq_html)
+            self.assertIn("<article", zsxq_html)
+            self.assertIn("知识星球长文粘贴版", zsxq_html)
+            self.assertNotIn("▍", zsxq_html)
 
             self.assertTrue(any(item["code"] == "remote_image" for item in report["warnings"]))
 

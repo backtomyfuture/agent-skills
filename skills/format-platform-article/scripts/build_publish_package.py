@@ -135,6 +135,14 @@ CALLOUT_MARKERS = {
     "💡": ("提示", "#fdf6ec", "#c2410c", "#7c2d12"),
     "✅": ("完成", "#f4f7f4", "#15803d", "#14532d"),
     "🎯": ("重点", "#fef7e6", "#b45309", "#7c2d12"),
+    "😱": ("震撼", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "🤯": ("亲历", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "🎁": ("福利", "#fef7e6", "#b45309", "#7c2d12"),
+    "🔥": ("热门", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "🚀": ("推荐", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "📌": ("置顶", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "📣": ("通知", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "❤️": ("推荐", "#fdf6ec", "#c2410c", "#7c2d12"),
 }
 CODE_PLACEHOLDERS = {
     "UUID": "UUID",
@@ -546,6 +554,24 @@ def render_callout(text: str) -> str:
     marker = next((item for item in CALLOUT_MARKERS if text.startswith(item)), "")
     label, background, border, color = CALLOUT_MARKERS.get(marker, ("提示", "#fdf6ec", "#c2410c", "#7c2d12"))
     body = text[len(marker) :].strip() if marker else text.strip()
+    # Notion exports callouts as `> <emoji> >  **Label**: body`. After the
+    # outer blockquote marker has been stripped we still see the inner `>`
+    # right after the emoji — strip it so it does not leak into the rendered
+    # body as a literal character.
+    body = re.sub(r"^>\s+", "", body)
+    if marker:
+        bold_match = re.match(r"^\*\*\s*([^*\n]+?)\s*\*\*\s*[:：]?\s*", body)
+        if bold_match:
+            custom_label = bold_match.group(1).strip()
+            if custom_label:
+                label = custom_label
+                body = body[bold_match.end():]
+        else:
+            body = re.sub(
+                r"^\*\*\s*" + re.escape(label) + r"\s*\*\*\s*[:：]?\s*",
+                "",
+                body,
+            )
     return (
         f'<section style="margin:30px 0;padding:20px 22px 18px;background:{background};'
         f'border-left:3px solid {border};border-radius:2px 10px 10px 2px;color:{color};'
@@ -1013,6 +1039,11 @@ def render_blocks(
         if not quote_lines:
             return
         text = " ".join(quote_lines).strip()
+        if any(text.startswith(marker) for marker in CALLOUT_MARKERS):
+            html_lines.append(render_callout(text))
+            ordered_number = 0
+            quote_lines.clear()
+            return
         html_lines.append(
             '<section style="margin:30px 0;padding:20px 24px 18px;background:#fdf6ec;'
             'border-left:3px solid #c2410c;border-radius:2px 10px 10px 2px;'
@@ -1663,28 +1694,61 @@ def render_toutiao_blocks(
     return "\n".join(apply_toutiao_spacing(html_lines))
 
 
+PLATFORM_TITLE_SUFFIX = {
+    "zhihu": "知乎正文粘贴版",
+    "toutiao": "今日头条正文粘贴版",
+    "zsxq": "知识星球长文粘贴版",
+    "smzdm": "什么值得买正文粘贴版",
+}
+
+
+def render_magazine_platform_html(
+    platform: str,
+    title: str,
+    markdown: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    """Render a non-WeChat platform's article body using the same magazine
+    layout as WeChat.
+
+    All four richtext platforms (Zhihu, Toutiao, Zsxq, SMZDM) accept inline
+    CSS pasted from a browser preview. By sharing the WeChat magazine
+    renderer (`render_blocks`) every callout / emoji badge / code block /
+    table / list improvement automatically benefits every platform — one
+    place to fix, one regression test surface.
+
+    The only per-platform differences are:
+    - the `<title>` suffix shown in the browser tab,
+    - the image mode (Zhihu uses `placeholder`/HTTPS, others use `data`).
+    """
+    body = render_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    safe_title = html.escape(title)
+    suffix = PLATFORM_TITLE_SUFFIX.get(platform, str(PLATFORM_PROFILES[platform]["label"]))
+    safe_suffix = html.escape(suffix)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title} - {safe_suffix}</title>
+</head>
+<body style="box-sizing:border-box;margin:0;background:#f7f3ec;padding:18px 0;overflow-x:hidden;">
+  <article style="width:calc(100% - 40px);max-width:720px;box-sizing:border-box;margin:0 auto;background:#ffffff;padding:30px 22px 36px;color:#222222;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;">
+{body}
+  </article>
+</body>
+</html>
+"""
+
+
 def render_toutiao_html(
     title: str,
     markdown: str,
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    # No auto-prepended lead/route copy: the editor's title field handles the
-    # headline, and any opening paragraph should be authored in the source.
-    body = render_toutiao_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    safe_title = html.escape(title)
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{safe_title} - 今日头条正文粘贴版</title>
-</head>
-<body>
-{body}
-</body>
-</html>
-"""
+    return render_magazine_platform_html("toutiao", title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
 
 
 def render_zhihu_html(
@@ -1693,22 +1757,7 @@ def render_zhihu_html(
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    # No auto-prepended lead/route copy: Zhihu's editor has a separate title
-    # field, and any intro should be authored in the source.
-    body = render_toutiao_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    safe_title = html.escape(title)
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{safe_title} - 知乎正文粘贴版</title>
-</head>
-<body>
-{body}
-</body>
-</html>
-"""
+    return render_magazine_platform_html("zhihu", title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
 
 
 def render_platform_html(
@@ -1718,29 +1767,19 @@ def render_platform_html(
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    if platform == "zhihu":
-        return render_zhihu_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    if platform == "toutiao":
-        return render_toutiao_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    if platform == "zsxq":
-        return render_zsxq_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-
-    profile = PLATFORM_PROFILES[platform]
-    body = render_platform_blocks(markdown, platform, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    safe_title = html.escape(title)
-    safe_label = html.escape(str(profile["label"]))
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{safe_title} - {safe_label}</title>
-</head>
-<body>
-{body}
-</body>
-</html>
-"""
+    # All four richtext platforms (Zhihu, Toutiao, Zsxq, SMZDM) share the
+    # WeChat magazine renderer so every callout / emoji badge / table fix
+    # lands in one place. The legacy platform-specific renderers
+    # (`render_platform_blocks`, `render_toutiao_blocks`, `render_zsxq_blocks`)
+    # remain in this module only as a fallback reference and are not used
+    # by the default build path.
+    return render_magazine_platform_html(
+        platform,
+        title,
+        markdown,
+        image_mode=image_mode,
+        asset_base_dir=asset_base_dir,
+    )
 
 
 def render_zsxq_table(table_lines: list[str]) -> str:
@@ -2070,22 +2109,13 @@ def render_zsxq_html(
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    # No auto-prepended lead/route copy: any opening paragraph should be
-    # authored in the source so the package only ships what the user wrote.
-    body = render_zsxq_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    safe_title = html.escape(title)
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{safe_title} - 知识星球</title>
-</head>
-<body>
-{body}
-</body>
-</html>
-"""
+    return render_magazine_platform_html(
+        "zsxq",
+        title,
+        markdown,
+        image_mode=image_mode,
+        asset_base_dir=asset_base_dir,
+    )
 
 
 def render_wechat_html(
