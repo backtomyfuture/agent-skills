@@ -124,10 +124,10 @@ PLATFORM_PROFILES: dict[str, dict[str, object]] = {
     },
 }
 CALLOUT_MARKERS = {
-    "⚠️": ("注意", "#fff7ed", "#f59e0b", "#9a3412"),
-    "💡": ("提示", "#fff7ed", "#f59e0b", "#9a3412"),
-    "✅": ("完成", "#f8fafc", "#111827", "#111827"),
-    "🎯": ("重点", "#fffbeb", "#d97706", "#78350f"),
+    "⚠️": ("注意", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "💡": ("提示", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "✅": ("完成", "#f4f7f4", "#15803d", "#14532d"),
+    "🎯": ("重点", "#fef7e6", "#b45309", "#7c2d12"),
 }
 CODE_PLACEHOLDERS = {
     "UUID": "UUID",
@@ -259,12 +259,12 @@ def markdown_inline_to_html(text: str) -> str:
     escaped = html.escape(text)
     escaped = re.sub(
         r"`([^`]+)`",
-        r'<code style="font-size:0.92em;background:#f1f5f9;color:#0f172a;border-radius:4px;padding:2px 5px;">\1</code>',
+        r'<code style="font-size:0.9em;background:#faf3e7;color:#9a3412;border:1px solid #f0e3c8;border-radius:4px;padding:1px 6px;font-family:Menlo,Consolas,monospace;">\1</code>',
         escaped,
     )
     escaped = re.sub(
         r"\*\*([^*]+)\*\*",
-        r'<span style="color:#1a1a1a;font-weight:700;">\1</span>',
+        r'<span style="color:#1a1a1a;font-weight:700;border-bottom:2px solid #fcd34d;padding-bottom:1px;">\1</span>',
         escaped,
     )
     # Italic: single * not adjacent to other * or word chars (avoids tripping on **bold** leftovers).
@@ -275,7 +275,7 @@ def markdown_inline_to_html(text: str) -> str:
     )
     escaped = re.sub(
         r"\[([^\]]+)\]\(([^)]+)\)",
-        r'<a href="\2" style="color:#b45309;text-decoration:underline;text-underline-offset:3px;">\1</a>',
+        r'<a href="\2" style="color:#9a3412;text-decoration:none;border-bottom:1px solid #fcd34d;padding-bottom:1px;">\1</a>',
         escaped,
     )
     label_colon_re = re.compile(r'(<span style="[^"]+font-weight:700;?[^"]*">)([^<]+)(</span>)\s*([：:])\s*')
@@ -387,73 +387,81 @@ def render_table(table_lines: list[str]) -> str:
     header = rows[0]
     body = rows[2:]
     header_cells = "".join(
-        '<th style="padding:10px 11px;border:1px solid #111827;background:#111827;'
-        'color:#ffffff;font-size:14px;line-height:1.5;text-align:left;font-weight:700;">'
+        '<th style="padding:13px 14px;background:#fdf6ec;color:#1a1a1a;'
+        'font-size:14px;line-height:1.5;text-align:left;font-weight:800;letter-spacing:0.3px;'
+        'border-bottom:2px solid #c2410c;">'
         + markdown_inline_to_html(cell)
         + "</th>"
         for cell in header
     )
     body_rows = []
-    for row in body:
+    for row_index, row in enumerate(body):
+        is_last = row_index == len(body) - 1
+        stripe = "#ffffff" if row_index % 2 == 0 else "#fbf6ec"
+        border = "" if is_last else "border-bottom:1px solid #f0e6d2;"
         cells = "".join(
-            '<td style="padding:10px 11px;border:1px solid #e5e7eb;color:#334155;'
-            'font-size:14px;line-height:1.65;vertical-align:top;">'
+            f'<td style="padding:12px 14px;color:#2b2b2b;background:{stripe};'
+            f'font-size:14.5px;line-height:1.75;vertical-align:top;{border}">'
             + markdown_inline_to_html(cell)
             + "</td>"
             for cell in row
         )
         body_rows.append(f"<tr>{cells}</tr>")
     return (
-        '<div style="width:100%;overflow:auto;margin:24px 0;border-radius:10px;box-sizing:border-box;">'
+        '<section style="width:100%;overflow:auto;margin:28px 0;border-radius:10px;'
+        'border:1px solid #ece4d6;box-sizing:border-box;background:#ffffff;">'
         '<table style="width:100%;border-collapse:collapse;background:#ffffff;">'
         f"<thead><tr>{header_cells}</tr></thead>"
         f"<tbody>{''.join(body_rows)}</tbody>"
-        "</table></div>"
+        "</table></section>"
     )
 
 
 def render_divider() -> str:
     return (
-        '<p style="margin:36px 0 32px;text-align:center;line-height:1;color:#d8c7ad;'
-        'font-size:13px;letter-spacing:0;">—</p>'
+        '<p style="margin:48px 0 44px;text-align:center;line-height:1;">'
+        '<span style="display:inline-block;color:#c2a874;font-size:10px;'
+        'letter-spacing:14px;padding-left:14px;">● ● ●</span>'
+        "</p>"
     )
 
 
 def render_callout(text: str) -> str:
     marker = next((item for item in CALLOUT_MARKERS if text.startswith(item)), "")
-    label, background, border, color = CALLOUT_MARKERS.get(marker, ("提示", "#f8fafc", "#94a3b8", "#334155"))
+    label, background, border, color = CALLOUT_MARKERS.get(marker, ("提示", "#fdf6ec", "#c2410c", "#7c2d12"))
     body = text[len(marker) :].strip() if marker else text.strip()
     return (
-        f'<blockquote style="margin:24px 0 28px;padding:15px 18px 15px 20px;background:{background};'
-        f'border-left:4px solid {border};border-radius:0 10px 10px 0;color:{color};'
-        'font-size:16px;line-height:1.95;font-weight:500;width:100%;box-sizing:border-box;'
-        'box-shadow:0 8px 22px rgba(17,24,39,0.06);">'
-        f'<strong style="display:block;margin-bottom:5px;color:{color};font-size:14px;font-weight:800;">{html.escape(marker + " " + label).strip()}</strong>'
+        f'<section style="margin:30px 0;padding:20px 22px 18px;background:{background};'
+        f'border-left:3px solid {border};border-radius:2px 10px 10px 2px;color:{color};'
+        'font-size:15.5px;line-height:1.95;width:100%;box-sizing:border-box;">'
+        f'<p style="margin:0 0 8px;color:{border};font-size:12px;font-weight:800;'
+        'letter-spacing:2px;text-transform:uppercase;line-height:1.4;">'
+        f'<span style="margin-right:6px;">{html.escape(marker)}</span>'
+        f'{html.escape(label)}'
+        '</p>'
+        f'<p style="margin:0;color:{color};font-size:15.5px;line-height:1.95;font-weight:400;">'
         + markdown_inline_to_html(body)
-        + "</blockquote>"
+        + '</p>'
+        + "</section>"
     )
 
 
 def render_image_caption(text: str) -> str:
-    """Render '*▼ caption*' style paragraphs as a centered, pill-shaped caption.
+    """Render '*▼ caption*' style paragraphs as a clean italic editorial caption.
 
     These appear right under images and describe what the reader is looking at.
-    Treating them as plain paragraphs leaves raw asterisks in the rendered output
-    and the line floats too close to the next paragraph; a small caption pill is
-    closer to what the author intends and looks intentional in WeChat preview.
+    Top WeChat accounts use a small centered italic caption rather than a pill,
+    because the pill looks like a tag instead of a caption.
     """
     match = IMAGE_CAPTION_RE.match(text)
     arrow = match.group(1) if match else ""
     body = match.group(2) if match else text
     inner = markdown_inline_to_html(body)
     return (
-        '<p style="margin:-10px 0 24px;text-align:center;line-height:1.6;">'
-        '<span style="display:inline-block;padding:5px 14px;background:#f1f5f9;'
-        'color:#475569;font-size:13px;border-radius:999px;'
-        'border:1px solid #e5e7eb;letter-spacing:0;">'
-        f'<span style="margin-right:6px;color:#c2410c;">{html.escape(arrow)}</span>'
-        f'{inner}'
-        '</span>'
+        '<p style="margin:-6px 0 28px;text-align:center;line-height:1.65;color:#8a8a8a;'
+        'font-size:13px;letter-spacing:0.4px;">'
+        f'<span style="margin-right:4px;color:#c2410c;">{html.escape(arrow)}</span>'
+        f'<span style="font-style:normal;">{inner}</span>'
         "</p>"
     )
 
@@ -471,40 +479,58 @@ def is_generated_table_image(src: str) -> bool:
 def render_list(items: list[str], ordered: bool, start: int | None = None) -> str:
     if ordered:
         first_number = start or 1
-        return "".join(
-            '<p style="font-size:16px;line-height:1.95;margin:0 0 10px;color:#2c2c2c;">'
-            f'<span style="display:inline-block;min-width:1.6em;color:#d97706;font-weight:800;">{first_number + offset}.</span>&nbsp;'
-            + markdown_inline_to_html(item.strip())
-            + "</p>"
-            for offset, item in enumerate(items)
-        )
+        rendered = []
+        for offset, item in enumerate(items):
+            number = first_number + offset
+            number_label = f"{number:02d}" if number < 100 else str(number)
+            rendered.append(
+                '<p style="font-size:16px;line-height:1.95;margin:0 0 12px;color:#2b2b2b;'
+                'padding-left:0;box-sizing:border-box;">'
+                f'<span style="display:inline-block;min-width:34px;color:#c2410c;'
+                f'font-weight:800;font-size:15px;letter-spacing:0.5px;'
+                f'font-family:Menlo,Consolas,-apple-system,sans-serif;">{number_label}.</span>'
+                + markdown_inline_to_html(item.strip())
+                + "</p>"
+            )
+        return "".join(rendered)
 
-    tag = "ol" if ordered else "ul"
-    start_attr = f' start="{start}"' if ordered and start and start > 1 else ""
-    list_style = "decimal" if ordered else "disc"
     rendered_items = "".join(
-        '<li style="margin:0 0 8px;padding-left:2px;">' + markdown_inline_to_html(item.strip()) + "</li>"
+        '<p style="font-size:16px;line-height:1.95;margin:0 0 10px;color:#2b2b2b;'
+        'padding-left:4px;box-sizing:border-box;">'
+        '<span style="display:inline-block;width:5px;height:5px;background:#c2410c;'
+        'border-radius:50%;vertical-align:3px;margin-right:12px;"></span>'
+        + markdown_inline_to_html(item.strip())
+        + "</p>"
         for item in items
     )
-    return (
-        f'<{tag}{start_attr} style="margin:0 0 20px 1.2em;padding:0;color:#2c2c2c;'
-        f'font-size:16px;line-height:1.9;list-style-type:{list_style};">'
-        + rendered_items
-        + f"</{tag}>"
-    )
+    return rendered_items
 
 
 def render_code_block(code: str, language: str) -> str:
     safe_code = render_code_with_placeholder_badges(code)
+    language_label = ""
+    safe_language = html.escape(language.strip()) if language else ""
+    if safe_language:
+        language_label = (
+            '<p style="margin:0 0 8px;color:#9a3412;font-size:11px;font-weight:800;'
+            'letter-spacing:2px;text-transform:uppercase;line-height:1;'
+            'font-family:Menlo,Consolas,monospace;">'
+            f'{safe_language}'
+            '</p>'
+        )
     return (
-        '<pre style="margin:22px 0;padding:13px 14px;background:#f6f8fa;border:1px solid #d0d7de;'
-        'border-radius:8px;color:#1f2937;font-size:13px;line-height:1.75;'
-        'font-family:Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;'
-        'overflow-wrap:anywhere;width:100%;box-sizing:border-box;">'
-        '<code style="display:block;font-family:Menlo,Consolas,monospace;color:#1f2937;'
+        '<section style="margin:26px 0;padding:16px 18px 14px;background:#faf6ed;'
+        'border:1px solid #ece4d6;border-left:3px solid #c2410c;'
+        'border-radius:2px 8px 8px 2px;color:#1a1a1a;font-size:13px;line-height:1.75;'
+        'width:100%;box-sizing:border-box;">'
+        + language_label
+        + '<pre style="margin:0;padding:0;background:transparent;border:0;color:#1a1a1a;'
+        'font-size:13px;line-height:1.75;font-family:Menlo,Consolas,monospace;'
+        'white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;">'
+        '<code style="display:block;font-family:Menlo,Consolas,monospace;color:#1a1a1a;'
         'background:transparent;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;">'
         + safe_code
-        + "</code></pre>"
+        + "</code></pre></section>"
     )
 
 
@@ -769,24 +795,23 @@ def render_image_block(
     caption = ""
     if alt_text.strip() and alt_text.strip().lower() != "image" and not is_table_image:
         caption = (
-            '<p style="margin:-10px 0 24px;text-align:center;line-height:1.6;">'
-            '<span style="display:inline-block;padding:5px 14px;background:#f1f5f9;'
-            'color:#475569;font-size:13px;border-radius:999px;'
-            'border:1px solid #e5e7eb;letter-spacing:0;">'
+            '<p style="margin:-4px 0 28px;text-align:center;line-height:1.65;color:#8a8a8a;'
+            'font-size:13px;letter-spacing:0.4px;">'
+            '<span style="color:#c2410c;margin-right:4px;">▼</span>'
             + safe_label
-            + "</span></p>"
+            + "</p>"
         )
     image_style = (
         "display:block;max-width:100%;height:auto;border-radius:6px;margin:0 auto;"
-        "border:1px solid #e5e7eb;box-shadow:0 8px 24px rgba(17,24,39,0.06);"
+        "border:1px solid #ece4d6;box-shadow:0 6px 18px rgba(120,80,30,0.06);"
     )
     if not is_table_image:
         image_style = (
             "display:block;max-width:100%;height:auto;border-radius:8px;margin:0 auto;"
-            "box-shadow:0 2px 8px rgba(15,23,42,0.08);"
+            "box-shadow:0 8px 28px rgba(120,80,30,0.10);"
         )
     return (
-        '<p style="margin:26px 0 14px;text-align:center;">'
+        '<p style="margin:30px 0 12px;text-align:center;">'
         f'<img src="{safe_src}" alt="{safe_label}" style="{image_style}" />'
         "</p>"
         + caption
@@ -858,9 +883,9 @@ def render_blocks(
             html_lines.append(render_image_caption(text))
         else:
             style = (
-                "font-size:17px;line-height:2;margin:0 0 22px;color:#222222;font-weight:400;"
+                "font-size:17px;line-height:2.05;margin:0 0 26px;color:#1a1a1a;font-weight:400;letter-spacing:0.3px;"
                 if first_paragraph
-                else "font-size:16px;line-height:1.95;margin:0 0 18px;color:#2c2c2c;"
+                else "font-size:16px;line-height:2;margin:0 0 22px;color:#2b2b2b;letter-spacing:0.2px;"
             )
             html_lines.append(f'<p style="{style}">' + markdown_inline_to_html(text) + "</p>")
         first_paragraph = False
@@ -873,12 +898,15 @@ def render_blocks(
             return
         text = " ".join(quote_lines).strip()
         html_lines.append(
-            '<blockquote style="margin:24px 0 28px;padding:16px 18px 16px 20px;background:#fff7ed;'
-            'border-left:4px solid #d97706;border-radius:0 10px 10px 0;color:#78350f;'
-            'font-size:16px;line-height:1.95;font-weight:500;width:100%;box-sizing:border-box;'
-            'box-shadow:0 8px 22px rgba(17,24,39,0.06);">'
+            '<section style="margin:30px 0;padding:20px 24px 18px;background:#fdf6ec;'
+            'border-left:3px solid #c2410c;border-radius:2px 10px 10px 2px;'
+            'width:100%;box-sizing:border-box;position:relative;">'
+            '<p style="margin:0 0 6px;color:#c2410c;font-size:22px;line-height:1;'
+            "font-family:Georgia,serif;font-weight:700;\">&ldquo;</p>"
+            '<p style="margin:0;color:#3c2a14;font-size:15.5px;line-height:1.95;'
+            'font-style:italic;letter-spacing:0.3px;">'
             + markdown_inline_to_html(text)
-            + "</blockquote>"
+            + "</p></section>"
         )
         ordered_number = 0
         quote_lines.clear()
@@ -931,20 +959,25 @@ def render_blocks(
             text = markdown_inline_to_html(heading.group(2).strip())
             if level == 2:
                 html_lines.append(
-                    '<h2 style="font-size:22px;line-height:1.55;margin:44px 0 20px;color:#111827;'
-                    'font-weight:900;padding:0 0 0 15px;border-left:5px solid #d97706;'
-                    'width:100%;box-sizing:border-box;letter-spacing:0;background:transparent;">'
+                    '<h2 style="font-size:22px;line-height:1.55;margin:56px 0 24px;color:#1a1a1a;'
+                    'font-weight:800;padding:0 0 14px;border-bottom:1px solid #ece4d6;'
+                    'width:100%;box-sizing:border-box;letter-spacing:0.5px;background:transparent;">'
+                    '<span style="display:inline-block;width:8px;height:20px;background:#c2410c;'
+                    'margin-right:12px;vertical-align:-3px;border-radius:1px;"></span>'
                     + text
                     + "</h2>"
                 )
                 ordered_number = 0
             else:
                 html_lines.append(
-                    '<h3 style="font-size:18px;line-height:1.6;margin:30px 0 16px;color:#ffffff;'
-                    'font-weight:800;padding:10px 14px;background:#111827;border-left:4px solid #f59e0b;'
-                    'border-radius:8px;width:100%;box-sizing:border-box;letter-spacing:0;">'
+                    '<h3 style="font-size:18px;line-height:1.6;margin:40px 0 18px;color:#1a1a1a;'
+                    'font-weight:800;padding:0;background:transparent;'
+                    'width:100%;box-sizing:border-box;letter-spacing:0.3px;">'
+                    '<span style="color:#c2410c;font-weight:900;margin-right:8px;'
+                    'font-size:18px;">▍</span>'
+                    '<span style="border-bottom:2px solid #fde68a;padding-bottom:4px;">'
                     + text
-                    + "</h3>"
+                    + "</span></h3>"
                 )
                 ordered_number = 0
             index += 1
@@ -1962,8 +1995,8 @@ def render_wechat_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{safe_title}</title>
 </head>
-<body style="box-sizing:border-box;margin:0;background:#f7f3ec;padding:18px 0;overflow-x:hidden;">
-  <article style="width:calc(100% - 40px);max-width:720px;box-sizing:border-box;margin:0 auto;background:#ffffff;padding:30px 22px 36px;color:#222222;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;">
+<body style="box-sizing:border-box;margin:0;background:#f5efe4;padding:20px 0;overflow-x:hidden;">
+  <article style="width:calc(100% - 32px);max-width:720px;box-sizing:border-box;margin:0 auto;background:#ffffff;padding:38px 24px 42px;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;border-top:3px solid #c2410c;box-shadow:0 4px 24px rgba(120,80,30,0.05);">
     {body}
   </article>
 </body>
