@@ -75,8 +75,19 @@ Do not expect legacy intermediate files such as `preview.html`, `copy.html`, `we
 - Do not use Base64 for Zhihu. Historical real-editor checks showed Zhihu displays `图片导入失败，请重新上传`; `platforms/zhihu.html` must use HTTPS image URLs produced by Zhihu upload/API or clear placeholders.
 - Always copy local images into `assets/`. When local images exist, emit `image-manifest.md` so the user can manually re-upload images in order if Zhihu upload is unavailable or another platform drops embedded images during paste.
 - Preserve authored headings, paragraphs, links, bold/italic text, blockquotes, lists, images, and code blocks. Do not invent editorial framing.
-- WeChat visual style should feel like a polished editorial column: H2 uses a clean black text heading with a warm left rule (not a rounded capsule), H3 uses a compact filled heading band, and Markdown blockquotes/callouts use a warm tinted background with a left accent rule. Keep this styling inline and paste-stable for the WeChat editor.
-- Render Markdown dividers (`---`, `***`, `___`) as very subtle real-character separators such as a faint centered `—`, not empty CSS-only rules or decorative dot groups. WeChat often strips blank `div`/`hr` separators during copy/paste, but heavy visible dividers feel templated.
+- WeChat visual style should feel like a polished editorial column from a top-tier Chinese magazine account (e.g. 36氪, 晚点LatePost, 量子位). Concretely:
+  - H2 is a chapter marker: bold dark heading prefixed by a small terracotta accent block (`#c2410c`) and followed by a thin warm hairline (`#ece4d6`) running across the column. No filled capsule, no heavy left bar, no all-caps.
+  - H3 is a section subhead: bold dark text led by a `▍` accent in the brand color, with a soft amber underline (`#fde68a`) running only under the heading text. No dark-filled box.
+  - Body paragraphs use `line-height:2.0` with generous bottom margin so the column breathes; the first paragraph is one step larger and uses the deepest text color as a lead-in.
+  - **Bold** spans get the "highlighter marker" treatment — bold weight plus a 2px amber underline (`#fcd34d`) — so emphasized keywords pop without screaming. Links share the same treatment but in a deeper terracotta (`#9a3412`).
+  - Markdown `>` quotes render as a warm cream card (`#fdf6ec`) with a Georgia serif open-quote glyph and italic body, framed by a 3px terracotta left rule. No heavy shadow.
+  - Emoji-prefixed callouts (`⚠️ 💡 ✅ 🎯`) render as labeled cards with a small letter-spaced uppercase header (editorial style) above the body.
+  - Tables get a zebra-striped warm body, an editorial cream header with a 2px terracotta underline, and a soft warm hairline frame with rounded corners.
+  - Ordered lists use zero-padded monospace numerals (`01.`, `02.`) in the brand color; unordered lists use a small filled brand-color dot.
+  - Code blocks live inside a warm cream card with a 3px terracotta accent rule, a small uppercase language label, and copy-safe `pre > code` whitespace handling. Inline `code` matches the warm palette.
+  - Dividers render as a centered three-dot `● ● ●` in muted gold so they feel like an editorial pause, not a default `<hr>`.
+  - All effects rely on inline `style` only (no `<style>` block, no classes, no CSS-only `::before`) so they survive paste into the WeChat editor.
+- Render Markdown dividers (`---`, `***`, `___`) as real-character separators (the editorial three-dot `● ● ●` in muted gold for WeChat) rather than empty CSS-only rules. WeChat often strips blank `div`/`hr` separators during copy/paste, so a visible character-based mark is required. Avoid templated single em-dashes — they read as accidental punctuation.
 - When large Markdown tables are converted to PNGs, do not repeat the nearest heading as a pill caption under the image. The H2 already names the section; duplicated captions look like broken image labels in WeChat.
 - Code blocks should preserve whitespace and use copy-safe `pre > code` structures. Full-width placeholders such as `【UUID】` and `【你的服务器IP】` should keep their visual cue.
 

@@ -57,16 +57,19 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("linear-gradient(90deg,#eef4ff", rendered)
         self.assertNotIn("本文路线", rendered)
         self.assertNotIn("<h1", rendered)
-        # Authored content still renders.
-        self.assertIn("blockquote", rendered)
+        # Authored content still renders inside a quote container — the
+        # editorial redesign uses <section> instead of raw <blockquote> but the
+        # quoted text and an attribution marker must both be present.
+        self.assertIn("引用", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
         self.assertIn("小节", rendered)
 
     def test_render_wechat_html_body_does_not_force_mobile_overflow(self):
         rendered = build_publish_package.render_wechat_html("标题", "## 小节\n\n正文")
 
         self.assertIn("<body style=\"box-sizing:border-box;", rendered)
-        self.assertIn("padding:18px 0", rendered)
-        self.assertIn("width:calc(100% - 40px)", rendered)
+        self.assertIn("padding:20px 0", rendered)
+        self.assertIn("width:calc(100% - 32px)", rendered)
         self.assertIn("overflow-x:hidden", rendered)
         self.assertNotIn("<body style=\"width:100%;", rendered)
 
@@ -76,7 +79,8 @@ class BuildPublishPackageTests(unittest.TestCase):
             "## 一级小节\n\n### 操作步骤\n\n> 如果不幸封号也不用慌张，退款基本都能追回。\n\n💡 这是一条提示。",
         )
 
-        for stale_green in [
+        # Stale colors from earlier iterations must be gone.
+        for stale_color in [
             "#ecfdf5",
             "#10b981",
             "#047857",
@@ -84,30 +88,44 @@ class BuildPublishPackageTests(unittest.TestCase):
             "#064e3b",
             "#a7f3d0",
             "rgba(15,118,110",
+            # Old WeChat treatments dropped in favor of the editorial column.
+            "border-left:5px solid #d97706",
+            "background:#111827",
+            "border-left:4px solid #f59e0b",
+            "background:#fff7ed",
+            "border-left:4px solid #d97706",
+            "box-shadow:0 8px 22px rgba(17,24,39,0.06)",
         ]:
-            self.assertNotIn(stale_green, rendered)
-        self.assertIn("border-left:5px solid #d97706", rendered)
+            self.assertNotIn(stale_color, rendered)
+        # The new H2 is a clean editorial title with an accent block prefix and
+        # a thin bottom hairline (not a heavy left bar).
+        self.assertIn("border-bottom:1px solid #ece4d6", rendered)
+        self.assertIn("background:#c2410c", rendered)
         self.assertIn("background:transparent", rendered)
-        self.assertIn("background:#111827", rendered)
-        self.assertIn("border-left:4px solid #f59e0b", rendered)
-        self.assertIn("color:#ffffff", rendered)
-        self.assertIn("background:#fff7ed", rendered)
-        self.assertIn("border-left:4px solid #d97706", rendered)
-        self.assertIn("color:#78350f", rendered)
-        self.assertIn("box-shadow:0 8px 22px rgba(17,24,39,0.06)", rendered)
-        self.assertIn("font-weight:500", rendered)
-        self.assertIn("💡 提示", rendered)
+        # The new H3 sheds the dark filled box for a marker + soft underline.
+        self.assertIn("border-bottom:2px solid #fde68a", rendered)
+        # The new blockquote uses warm cream + deep terracotta accents.
+        self.assertIn("background:#fdf6ec", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
+        self.assertIn("color:#3c2a14", rendered)
+        # Callout label is rendered (marker + Chinese label, separated for
+        # editorial uppercase tracking).
+        self.assertIn(">💡<", rendered)
+        self.assertIn("提示", rendered)
 
-    def test_image_caption_paragraph_is_rendered_as_pill(self):
+    def test_image_caption_paragraph_is_rendered_as_clean_italic(self):
         # Image captions written as "*▼ ...*" should not leak raw asterisks; they
-        # should turn into a small centered pill so they read like a caption.
+        # should turn into a clean centered editorial caption (small grey italic
+        # with a soft accent arrow), not a pill/tag chip.
         rendered = build_publish_package.render_wechat_html("标题", "*▼ 更新 Codex 后的入口*")
 
         self.assertNotIn("*▼", rendered)
         self.assertIn(">▼<", rendered)
         self.assertIn("更新 Codex 后的入口", rendered)
-        self.assertIn("border-radius:999px", rendered)
-        self.assertIn("letter-spacing:0", rendered)
+        # No tag-style pill; captions read as quiet editorial annotations.
+        self.assertNotIn("border-radius:999px", rendered)
+        self.assertIn("color:#8a8a8a", rendered)
+        self.assertIn("text-align:center", rendered)
 
     def test_inline_italic_is_rendered_as_em(self):
         # Single-asterisk emphasis should render as <em> instead of staying as
@@ -120,9 +138,13 @@ class BuildPublishPackageTests(unittest.TestCase):
 
     def test_inline_bold_still_works_alongside_italic(self):
         # The italic regex must not accidentally swallow ** bold ** markers.
+        # Bold uses the editorial "highlighter" marker (bold + amber underline)
+        # so we assert the structural pieces rather than an exact style string.
         rendered = build_publish_package.render_wechat_html("标题", "**重要** 和 *次要*")
 
-        self.assertIn("font-weight:700;\">重要</span>", rendered)
+        self.assertIn("font-weight:700", rendered)
+        self.assertIn("border-bottom:2px solid #fcd34d", rendered)
+        self.assertIn(">重要</span>", rendered)
         self.assertIn(">次要</em>", rendered)
 
     def test_render_wechat_html_handles_lists_dividers_and_callouts(self):
@@ -131,19 +153,22 @@ class BuildPublishPackageTests(unittest.TestCase):
             "第一段导语。\n\n- 准备账号\n- 准备信用卡\n\n---\n\n⚠️ 不要开启付费升级。",
         )
 
-        self.assertIn("<ul", rendered)
-        self.assertIn("<li", rendered)
+        # Unordered list items render as standalone paragraphs with an inline
+        # accent bullet — <ul>/<li> are dropped because WeChat strips their
+        # list-style cosmetics and the inline bullet survives paste.
         self.assertIn("准备账号", rendered)
-        self.assertIn(">—</p>", rendered)
-        self.assertIn("color:#d8c7ad", rendered)
-        self.assertIn("letter-spacing:0", rendered)
-        self.assertNotIn("· · ·", rendered)
-        self.assertNotIn("letter-spacing:8px", rendered)
+        self.assertIn("准备信用卡", rendered)
+        self.assertIn("background:#c2410c", rendered)
+        self.assertIn("border-radius:50%", rendered)
+        # Divider is the editorial three-dot pause, not raw dashes or <hr>.
+        self.assertIn("● ● ●", rendered)
+        self.assertIn("color:#c2a874", rendered)
+        self.assertNotIn(">—</p>", rendered)
         self.assertNotIn("height:1px", rendered)
         self.assertNotIn("<hr", rendered)
+        # Callout label survives.
         self.assertIn("注意", rendered)
         self.assertNotIn(">---<", rendered)
-        self.assertNotIn("<p", rendered.split("准备账号", 1)[0].rsplit("<ul", 1)[-1])
 
     def test_render_wechat_html_keeps_ordered_lists_readable_around_images(self):
         rendered = build_publish_package.render_wechat_html(
@@ -151,12 +176,12 @@ class BuildPublishPackageTests(unittest.TestCase):
             "## 步骤\n\n1. 第一步\n![图](assets/a.png)\n\n1. 第二步\n1. 第三步",
         )
 
-        self.assertIn("1.</span>&nbsp;第一步", rendered)
-        self.assertIn("2.</span>&nbsp;第二步", rendered)
-        self.assertIn("3.</span>&nbsp;第三步", rendered)
+        # Editorial ordered lists use zero-padded numbers ("01.") in the accent
+        # color, with the number rendered directly adjacent to the item text.
+        self.assertIn("01.</span>第一步", rendered)
+        self.assertIn("02.</span>第二步", rendered)
+        self.assertIn("03.</span>第三步", rendered)
         self.assertNotIn('start="2"', rendered)
-        self.assertIn("第二步", rendered)
-        self.assertIn("第三步", rendered)
 
     def test_render_wechat_html_renders_markdown_tables(self):
         rendered = build_publish_package.render_wechat_html(
@@ -193,8 +218,12 @@ class BuildPublishPackageTests(unittest.TestCase):
         )
 
         self.assertIn('alt="二、新模型：两条线，解决不同问题"', rendered)
-        self.assertIn("border:1px solid #e5e7eb", rendered)
-        self.assertIn("box-shadow:0 8px 24px rgba(17,24,39,0.06)", rendered)
+        # Table images get a soft warm hairline frame and a low-key shadow that
+        # matches the editorial palette (no harsh cool-grey border).
+        self.assertIn("border:1px solid #ece4d6", rendered)
+        self.assertIn("box-shadow:0 6px 18px rgba(120,80,30,0.06)", rendered)
+        # The H2 already names the section — never repeat it as a pill caption
+        # below the image.
         self.assertNotIn("二、新模型：两条线，解决不同问题</span></p>", rendered)
         self.assertNotIn("border-radius:999px", rendered)
 
@@ -214,12 +243,16 @@ class BuildPublishPackageTests(unittest.TestCase):
     def test_render_code_block_uses_light_copy_safe_style(self):
         rendered = build_publish_package.render_wechat_html("标题", "```yaml\nserver: example\n```")
 
-        self.assertIn("background:#f6f8fa", rendered)
-        self.assertIn("color:#1f2937", rendered)
+        # The code block stays light (Base64-paste friendly) and is wrapped in
+        # the warm editorial card with a deep-amber accent rule. The language
+        # label is rendered as a small uppercase header above the code, not as
+        # literal text inside the <pre>.
+        self.assertIn("background:#faf6ed", rendered)
+        self.assertIn("color:#1a1a1a", rendered)
         self.assertIn("display:block", rendered)
         self.assertIn("white-space:pre-wrap", rendered)
         self.assertIn("server: example", rendered)
-        self.assertNotIn(">yaml<", rendered)
+        self.assertIn(">yaml<", rendered)
         self.assertNotIn("color:#e5e7eb", rendered)
 
     def test_render_code_block_preserves_line_breaks_inside_code_element(self):
@@ -456,8 +489,17 @@ class BuildPublishPackageTests(unittest.TestCase):
         rendered = build_publish_package.render_wechat_html("标题", "1. **核心** ：选择 Xray-core")
         segment = rendered.split("核心", 1)[0].rsplit("<p", 1)[-1] + "核心" + rendered.split("核心", 1)[1].split("</p>", 1)[0]
 
-        self.assertIn("1.</span>&nbsp;", rendered)
-        self.assertIn('<span style="color:#1a1a1a;font-weight:700;">核心：</span>&nbsp;选择 Xray-core', rendered)
+        # New editorial list numbers are zero-padded and live directly adjacent
+        # to the item text (no &nbsp; spacer inside the number span itself).
+        self.assertIn("01.</span>", rendered)
+        # The bold label keeps the colon glued to "核心" so it cannot wrap onto
+        # a new line and an &nbsp; separates the label cluster from the body.
+        self.assertIn(
+            '<span style="color:#1a1a1a;font-weight:700;'
+            'border-bottom:2px solid #fcd34d;padding-bottom:1px;">核心：</span>'
+            '&nbsp;选择 Xray-core',
+            rendered,
+        )
         self.assertNotIn("<li", segment)
         self.assertNotIn("<ol", segment)
         self.assertNotIn("<strong", segment)
