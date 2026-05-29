@@ -8,6 +8,7 @@ import base64
 import html
 import json
 import mimetypes
+import os
 import re
 import shutil
 import subprocess
@@ -17,7 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Callable, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
 
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -34,35 +35,35 @@ REMOTE_IMAGE_MAX_BYTES = 25 * 1024 * 1024
 REMOTE_IMAGE_USER_AGENT = "format-platform-article/1.0 (+https://factory.ai)"
 REMOTE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"}
 PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm")
-RICH_HTML_PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm")
+# Zhihu is intentionally NOT in RICH_HTML_PLATFORMS: it is produced as an
+# import-ready Markdown file (platforms/zhihu.md) by md2zhihu, not as
+# paste-ready HTML. The other three still share the magazine HTML renderer.
+RICH_HTML_PLATFORMS = ("toutiao", "zsxq", "smzdm")
 PLATFORM_PROFILES: dict[str, dict[str, object]] = {
     "zhihu": {
         "label": "知乎",
-        "recommended": "platforms/zhihu.html",
+        "recommended": "platforms/zhihu.md",
         "fallback": "assets/ + image-manifest.md",
-        "html_image_mode": "placeholder",
-        "editor_model": "文章富文本编辑器，支持标题、加粗、引用、列表、代码块、图片、链接等常见原生结构，但会清洗复杂 HTML/CSS。",
-        "image_strategy": "知乎专栏实测会拒收 Base64 图片并提示“图片导入失败，请重新上传”。zhihu.html 只有在 --zhihu-cookie-file 自动上传成功或 --remote-image-map 提供 HTTPS 图片 URL 后才内嵌真实图片；否则使用明确占位符，并按 image-manifest.md 从 assets/ 手工补传。",
-        "code_strategy": "代码块保留为原生 pre/code，不使用公众号占位符徽章，避免知乎转换时剥离 span 后变形。",
+        "output_format": "markdown",
+        "html_image_mode": "markdown",
+        "editor_model": "知乎写文章编辑器支持导入/粘贴 Markdown。md2zhihu 生成的单文件 Markdown 把图片托管到 Git 图床、公式转知乎原生公式图、表格转 HTML，可一键导入。",
+        "image_strategy": "由 md2zhihu 把本地图片推送到 Git 图床（gitee/github）并改写成 HTTPS 原始链接，无需知乎 Cookie。若未配置 --zhihu-asset-repo 或未安装 md2zhihu，则回退为带本地 ../assets/ 链接的 zhihu.md，并按 image-manifest.md 手工补图。",
+        "code_strategy": "md2zhihu 保留原生代码块（可选转为图片）；公式 $...$/$$...$$ 转成知乎公式图，mermaid/graphviz 代码块转为图片。",
         "notes": [
-            "标题在知乎文章标题框单独填写；zhihu.html 只负责正文，不带 H1、包装头或平台说明文字。",
-            "保持段落、加粗、链接、图片、引用和代码块为原生编辑器结构，避免 CSS-heavy 样式、表格和分隔线。",
-            "不要对知乎输出 Base64 图片；优先通过知乎图片接口上传为 zhimg HTTPS URL。",
-            "不要把 Markdown 原文直接当首选粘贴；优先从 zhihu.html 复制富文本，再检查引用块、代码块和图片。",
-            "远程图片必须是 HTTPS URL；可用 --zhihu-cookie-file 触发自动上传到知乎自家图床。",
+            "标题在知乎文章标题框单独填写；zhihu.md 只负责正文，不带 H1、包装头或平台说明文字。",
+            "知乎正文通过“导入文档/粘贴 Markdown”载入 platforms/zhihu.md。",
+            "图片走 Git 图床：需要一个有写权限的公共仓库（gitee/github）并通过 SSH key 或带令牌的 https 仓库地址配置 --zhihu-asset-repo。",
+            "md2zhihu 依赖 pandoc/imagemagick/node/mermaid-cli，且不支持 Windows。",
+            "LaTeX 公式、mermaid、graphviz 会自动转成知乎可显示的图片。",
         ],
         "sources": [
             {
-                "label": "知乎知+自选创作宝典",
-                "url": "https://zhstatic.zhihu.com/org/zixuan-2020.pdf",
+                "label": "md2zhihu（markdown 转知乎兼容格式）",
+                "url": "https://github.com/drmingdrmer/md2zhihu",
             },
             {
-                "label": "Vditor 多平台复制能力",
-                "url": "https://b3log.org/vditor/",
-            },
-            {
-                "label": "Makedown 知乎 Markdown 兼容说明",
-                "url": "https://addons.mozilla.org/en-GB/firefox/addon/makedown/",
+                "label": "md2zhihu 中文说明",
+                "url": "https://github.com/drmingdrmer/md2zhihu/blob/main/README-cn.md",
             },
         ],
     },
@@ -135,6 +136,14 @@ CALLOUT_MARKERS = {
     "💡": ("提示", "#fdf6ec", "#c2410c", "#7c2d12"),
     "✅": ("完成", "#f4f7f4", "#15803d", "#14532d"),
     "🎯": ("重点", "#fef7e6", "#b45309", "#7c2d12"),
+    "😱": ("震撼", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "🤯": ("亲历", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "🎁": ("福利", "#fef7e6", "#b45309", "#7c2d12"),
+    "🔥": ("热门", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "🚀": ("推荐", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "📌": ("置顶", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "📣": ("通知", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "❤️": ("推荐", "#fdf6ec", "#c2410c", "#7c2d12"),
 }
 CODE_PLACEHOLDERS = {
     "UUID": "UUID",
@@ -291,7 +300,7 @@ def rewrite_images_to_assets(
 
     Local images are copied. Remote (`http(s)://...`) URLs are fetched when
     ``download_remote`` is True so wechat/toutiao/zsxq/smzdm.html can embed
-    them as Base64 and zhihu.html can reference a stable local path. This is
+    them as Base64 and zhihu.md can reference a stable local path. This is
     especially important for Notion exports whose S3 presigned URLs expire
     within an hour and would otherwise turn every cross-platform output
     into a pile of broken `<img>` tags.
@@ -546,6 +555,24 @@ def render_callout(text: str) -> str:
     marker = next((item for item in CALLOUT_MARKERS if text.startswith(item)), "")
     label, background, border, color = CALLOUT_MARKERS.get(marker, ("提示", "#fdf6ec", "#c2410c", "#7c2d12"))
     body = text[len(marker) :].strip() if marker else text.strip()
+    # Notion exports callouts as `> <emoji> >  **Label**: body`. After the
+    # outer blockquote marker has been stripped we still see the inner `>`
+    # right after the emoji — strip it so it does not leak into the rendered
+    # body as a literal character.
+    body = re.sub(r"^>\s+", "", body)
+    if marker:
+        bold_match = re.match(r"^\*\*\s*([^*\n]+?)\s*\*\*\s*[:：]?\s*", body)
+        if bold_match:
+            custom_label = bold_match.group(1).strip()
+            if custom_label:
+                label = custom_label
+                body = body[bold_match.end():]
+        else:
+            body = re.sub(
+                r"^\*\*\s*" + re.escape(label) + r"\s*\*\*\s*[:：]?\s*",
+                "",
+                body,
+            )
     return (
         f'<section style="margin:30px 0;padding:20px 22px 18px;background:{background};'
         f'border-left:3px solid {border};border-radius:2px 10px 10px 2px;color:{color};'
@@ -713,182 +740,6 @@ def image_src_for_mode(src: str, image_mode: str, asset_base_dir: Path | None = 
     return f"data:{mime_type};base64,{encoded}"
 
 
-def normalize_remote_image_key(value: str) -> str:
-    key = clean_image_target(unquote(str(value))).replace("\\", "/").strip()
-    while key.startswith("./"):
-        key = key[2:]
-    while key.startswith("../"):
-        key = key[3:]
-    return key
-
-
-def expand_remote_image_lookup(mapping: dict[str, str]) -> dict[str, str]:
-    lookup: dict[str, str] = {}
-    basename_values: dict[str, set[str]] = {}
-    for raw_key, raw_url in mapping.items():
-        url = str(raw_url).strip()
-        if not url:
-            continue
-        if not url.startswith("https://"):
-            raise ValueError(f"Remote image URL must be HTTPS: {url}")
-        key = str(raw_key).strip()
-        normalized = normalize_remote_image_key(key)
-        candidates = {key, normalized, f"../{normalized}"}
-        for candidate in candidates:
-            if candidate:
-                lookup[candidate] = url
-        basename_values.setdefault(Path(normalized).name, set()).add(url)
-
-    for basename, values in basename_values.items():
-        if basename and len(values) == 1:
-            lookup[basename] = next(iter(values))
-    return lookup
-
-
-def load_remote_image_map(path: Path | str | None) -> dict[str, str]:
-    if path is None:
-        return {}
-    map_path = Path(path).resolve()
-    data = json.loads(map_path.read_text(encoding="utf-8"))
-    mapping: dict[str, str] = {}
-    if isinstance(data, dict) and isinstance(data.get("images"), list):
-        for item in data["images"]:
-            if not isinstance(item, dict):
-                continue
-            key = item.get("src") or item.get("local") or item.get("path") or item.get("file")
-            url = item.get("url") or item.get("remote") or item.get("remote_url")
-            if key and url:
-                mapping[str(key)] = str(url)
-    elif isinstance(data, dict):
-        for key, url in data.items():
-            if isinstance(url, str):
-                mapping[str(key)] = url
-    else:
-        raise ValueError("--remote-image-map must be a JSON object or an object with an images array")
-    return expand_remote_image_lookup(mapping)
-
-
-def try_upload_zhihu_images(
-    image_manifest: list[dict[str, object]],
-    asset_base_dir: Path,
-    cookie_file: Path | str | None,
-    verbose: bool = True,
-) -> tuple[dict[str, str], str | None]:
-    """Upload local images to Zhihu and return (remote_url_map, error_reason).
-
-    The error_reason is a short human-readable string explaining why the upload
-    could not happen or what failed. Callers should surface it so the user
-    knows why zhihu.html still has placeholders.
-    """
-    if not image_manifest:
-        return {}, None
-
-    candidate_paths: list[Path] = []
-    if cookie_file:
-        candidate_paths.append(Path(cookie_file).expanduser())
-    candidate_paths.append(Path.home() / ".zhihu-cli" / "cookies.json")
-    cookie_path: Path | None = next((path for path in candidate_paths if path.exists()), None)
-    if not cookie_path:
-        return {}, (
-            "未找到知乎 Cookie 文件。请先运行 "
-            "`python3 scripts/zhihu_login.py` 抓取登录 Cookie，或显式传 --zhihu-cookie-file。"
-        )
-
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        import upload_zhihu_images as _zhihu  # noqa: WPS433 - local helper
-    except Exception as exc:
-        return {}, f"加载 upload_zhihu_images 失败：{exc}"
-
-    try:
-        cookies = _zhihu.load_cookie_file(cookie_path)
-    except Exception as exc:
-        return {}, f"解析 Cookie 文件 {cookie_path} 失败：{exc}"
-    missing = sorted(_zhihu.REQUIRED_COOKIES - set(cookies.keys()))
-    if missing:
-        return {}, (
-            f"Cookie 文件 {cookie_path} 缺少 {', '.join(missing)}；"
-            "重新运行 `python3 scripts/zhihu_login.py` 获取最新登录 Cookie。"
-        )
-
-    try:
-        opener = _zhihu.build_opener(cookies)
-        headers = _zhihu.base_headers(cookies.get("_xsrf", ""))
-    except Exception as exc:
-        return {}, f"初始化知乎客户端失败：{exc}"
-
-    uploaded: dict[str, str] = {}
-    local_items = [
-        item for item in image_manifest
-        if str(item.get("src") or "") and not REMOTE_RE.match(str(item.get("src") or ""))
-    ]
-    total = len(local_items)
-    failed: list[str] = []
-    for idx, item in enumerate(local_items, start=1):
-        src = str(item.get("src") or "")
-        local_path = (asset_base_dir / src).resolve()
-        if not local_path.exists():
-            failed.append(f"{src} (本地缺失)")
-            continue
-        if verbose:
-            print(
-                f"[zhihu-upload {idx}/{total}] {local_path.name}",
-                file=sys.stderr,
-                flush=True,
-            )
-        try:
-            url = _zhihu.upload_zhihu_image(opener, headers, local_path, source=src)
-        except Exception as exc:
-            failed.append(f"{local_path.name}: {exc}")
-            continue
-        if not url:
-            failed.append(f"{local_path.name} 没拿到 URL")
-            continue
-        if verbose:
-            print(f"  -> {url}", file=sys.stderr, flush=True)
-        # Map both the raw assets path and the platforms-relative form, since
-        # rewrite_images_to_remote_urls tries multiple candidate keys.
-        uploaded[src] = url
-        uploaded[f"../{src}"] = url
-        uploaded[Path(src).name] = url
-    error = None
-    if failed:
-        error = "部分图片上传未成功：" + "；".join(failed)
-    return uploaded, error
-
-
-def remote_url_for_image(src: str, remote_image_map: dict[str, str]) -> str | None:
-    if not remote_image_map:
-        return None
-    raw = clean_image_target(src)
-    normalized = normalize_remote_image_key(raw)
-    for candidate in (raw, normalized, f"../{normalized}", Path(normalized).name):
-        url = remote_image_map.get(candidate)
-        if url:
-            return url
-    return None
-
-
-def rewrite_images_to_remote_urls(
-    markdown: str,
-    remote_image_map: dict[str, str],
-) -> tuple[str, list[str]]:
-    missing: list[str] = []
-
-    def replace(match: re.Match[str]) -> str:
-        alt = match.group(1)
-        src = clean_image_target(match.group(2))
-        if REMOTE_RE.match(src):
-            return match.group(0)
-        url = remote_url_for_image(src, remote_image_map)
-        if not url:
-            missing.append(src)
-            return match.group(0)
-        return f"![{alt}]({url})"
-
-    return IMAGE_RE.sub(replace, markdown), missing
-
-
 def render_image_block(
     alt_text: str,
     src: str,
@@ -951,7 +802,7 @@ def render_image_manifest(title: str, manifest: list[dict[str, object]]) -> str:
     lines.extend(
         [
             "非知乎平台的主 HTML 会尽量内嵌本地图片。",
-            "知乎需要通过图片接口上传为 HTTPS 图片；如果当前 `zhihu.html` 显示占位符，请按下列顺序从 `assets/` 手工上传，或提供知乎 Cookie 重新构建。",
+            "知乎通过 md2zhihu 生成 `platforms/zhihu.md`，图片由 Git 图床托管为 HTTPS 链接。如果未配置 `--zhihu-asset-repo` 或未安装 md2zhihu，`zhihu.md` 会使用本地 `../assets/` 链接，请按下列顺序从 `assets/` 手工补图。",
             "",
         ]
     )
@@ -959,15 +810,6 @@ def render_image_manifest(title: str, manifest: list[dict[str, object]]) -> str:
         lines.append(f"{item['index']}. {item['label']}")
         lines.append(f"   - 文件：`{item['src']}`")
     return "\n".join(lines) + "\n"
-
-
-def render_remote_image_map_template(manifest: list[dict[str, object]]) -> str:
-    data = {
-        f"../{item['src']}": ""
-        for item in manifest
-        if isinstance(item.get("src"), str) and not REMOTE_RE.match(str(item["src"]))
-    }
-    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
 
 
 def render_blocks(
@@ -1013,6 +855,11 @@ def render_blocks(
         if not quote_lines:
             return
         text = " ".join(quote_lines).strip()
+        if any(text.startswith(marker) for marker in CALLOUT_MARKERS):
+            html_lines.append(render_callout(text))
+            ordered_number = 0
+            quote_lines.clear()
+            return
         html_lines.append(
             '<section style="margin:30px 0;padding:20px 24px 18px;background:#fdf6ec;'
             'border-left:3px solid #c2410c;border-radius:2px 10px 10px 2px;'
@@ -1663,52 +1510,61 @@ def render_toutiao_blocks(
     return "\n".join(apply_toutiao_spacing(html_lines))
 
 
+PLATFORM_TITLE_SUFFIX = {
+    "zhihu": "知乎正文粘贴版",
+    "toutiao": "今日头条正文粘贴版",
+    "zsxq": "知识星球长文粘贴版",
+    "smzdm": "什么值得买正文粘贴版",
+}
+
+
+def render_magazine_platform_html(
+    platform: str,
+    title: str,
+    markdown: str,
+    image_mode: str = "placeholder",
+    asset_base_dir: Path | None = None,
+) -> str:
+    """Render a non-WeChat platform's article body using the same magazine
+    layout as WeChat.
+
+    All four richtext platforms (Zhihu, Toutiao, Zsxq, SMZDM) accept inline
+    CSS pasted from a browser preview. By sharing the WeChat magazine
+    renderer (`render_blocks`) every callout / emoji badge / code block /
+    table / list improvement automatically benefits every platform — one
+    place to fix, one regression test surface.
+
+    The only per-platform differences are:
+    - the `<title>` suffix shown in the browser tab,
+    - the image mode (Zhihu uses `placeholder`/HTTPS, others use `data`).
+    """
+    body = render_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    safe_title = html.escape(title)
+    suffix = PLATFORM_TITLE_SUFFIX.get(platform, str(PLATFORM_PROFILES[platform]["label"]))
+    safe_suffix = html.escape(suffix)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title} - {safe_suffix}</title>
+</head>
+<body style="box-sizing:border-box;margin:0;background:#f7f3ec;padding:18px 0;overflow-x:hidden;">
+  <article style="width:calc(100% - 40px);max-width:720px;box-sizing:border-box;margin:0 auto;background:#ffffff;padding:30px 22px 36px;color:#222222;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;">
+{body}
+  </article>
+</body>
+</html>
+"""
+
+
 def render_toutiao_html(
     title: str,
     markdown: str,
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    # No auto-prepended lead/route copy: the editor's title field handles the
-    # headline, and any opening paragraph should be authored in the source.
-    body = render_toutiao_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    safe_title = html.escape(title)
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{safe_title} - 今日头条正文粘贴版</title>
-</head>
-<body>
-{body}
-</body>
-</html>
-"""
-
-
-def render_zhihu_html(
-    title: str,
-    markdown: str,
-    image_mode: str = "placeholder",
-    asset_base_dir: Path | None = None,
-) -> str:
-    # No auto-prepended lead/route copy: Zhihu's editor has a separate title
-    # field, and any intro should be authored in the source.
-    body = render_toutiao_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    safe_title = html.escape(title)
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{safe_title} - 知乎正文粘贴版</title>
-</head>
-<body>
-{body}
-</body>
-</html>
-"""
+    return render_magazine_platform_html("toutiao", title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
 
 
 def render_platform_html(
@@ -1718,29 +1574,19 @@ def render_platform_html(
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    if platform == "zhihu":
-        return render_zhihu_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    if platform == "toutiao":
-        return render_toutiao_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    if platform == "zsxq":
-        return render_zsxq_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-
-    profile = PLATFORM_PROFILES[platform]
-    body = render_platform_blocks(markdown, platform, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    safe_title = html.escape(title)
-    safe_label = html.escape(str(profile["label"]))
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{safe_title} - {safe_label}</title>
-</head>
-<body>
-{body}
-</body>
-</html>
-"""
+    # All four richtext platforms (Zhihu, Toutiao, Zsxq, SMZDM) share the
+    # WeChat magazine renderer so every callout / emoji badge / table fix
+    # lands in one place. The legacy platform-specific renderers
+    # (`render_platform_blocks`, `render_toutiao_blocks`, `render_zsxq_blocks`)
+    # remain in this module only as a fallback reference and are not used
+    # by the default build path.
+    return render_magazine_platform_html(
+        platform,
+        title,
+        markdown,
+        image_mode=image_mode,
+        asset_base_dir=asset_base_dir,
+    )
 
 
 def render_zsxq_table(table_lines: list[str]) -> str:
@@ -2070,22 +1916,13 @@ def render_zsxq_html(
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    # No auto-prepended lead/route copy: any opening paragraph should be
-    # authored in the source so the package only ships what the user wrote.
-    body = render_zsxq_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-    safe_title = html.escape(title)
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{safe_title} - 知识星球</title>
-</head>
-<body>
-{body}
-</body>
-</html>
-"""
+    return render_magazine_platform_html(
+        "zsxq",
+        title,
+        markdown,
+        image_mode=image_mode,
+        asset_base_dir=asset_base_dir,
+    )
 
 
 def render_wechat_html(
@@ -2152,18 +1989,17 @@ def render_copy_html(title: str) -> str:
 """
 
 
-def build_platform_report(zhihu_remote_enabled: bool = False) -> dict[str, dict[str, object]]:
+def build_platform_report(zhihu_hosted: bool = False) -> dict[str, dict[str, object]]:
     report: dict[str, dict[str, object]] = {}
     for platform, profile in PLATFORM_PROFILES.items():
         recommended = profile["recommended"]
         image_mode = profile["html_image_mode"]
         image_strategy = profile["image_strategy"]
-        if platform == "zhihu" and zhihu_remote_enabled:
-            recommended = "platforms/zhihu.html"
-            image_mode = "remote"
+        if platform == "zhihu" and not zhihu_hosted:
+            image_mode = "markdown-local"
             image_strategy = (
-                "已提供 HTTPS 图片映射，复制 zhihu.html；图片以远程 URL 进入正文。"
-                "发布前仍需确认知乎是否已转存/显示每张图片。"
+                "未使用 Git 图床（md2zhihu 不可用或未配置 --zhihu-asset-repo）。"
+                "zhihu.md 使用本地 ../assets/ 链接，请按 image-manifest.md 从 assets/ 手工补图。"
             )
         report[platform] = {
             "label": profile["label"],
@@ -2179,8 +2015,8 @@ def build_platform_report(zhihu_remote_enabled: bool = False) -> dict[str, dict[
     return report
 
 
-def render_platform_guide(title: str, zhihu_remote_enabled: bool = False) -> str:
-    report = build_platform_report(zhihu_remote_enabled=zhihu_remote_enabled)
+def render_platform_guide(title: str, zhihu_hosted: bool = False) -> str:
+    report = build_platform_report(zhihu_hosted=zhihu_hosted)
     lines = [
         f"# {title} 平台发布指南",
         "",
@@ -2212,14 +2048,16 @@ def render_platform_guide(title: str, zhihu_remote_enabled: bool = False) -> str
 
     lines.extend(
         [
-            "## 知乎图片 URL 映射",
+            "## 知乎（md2zhihu + Git 图床）",
             "",
-            "知乎真实编辑器会拒收 `data:image/...` Base64 图片。先用 `--zhihu-cookie-file` 或 `--remote-image-map` 生成带 HTTPS 图片 URL 的 `platforms/zhihu.html`；如果当前文件仍是占位符，再按 `image-manifest.md` 从 `assets/` 手工补传：",
+            "知乎正文由 md2zhihu 生成 `platforms/zhihu.md`：公式转知乎原生公式图，mermaid/graphviz 转图片，表格转 HTML，本地图片推送到 Git 图床并改写成 HTTPS 链接，可直接导入知乎。",
             "",
-            "1. 首选：重新运行 `build_publish_package.py --zhihu-cookie-file ~/.zhihu-cli/cookies.json --overwrite`，用知乎登录 Cookie 批量上传图片并重写 `platforms/zhihu.html`。",
-            "2. 兜底：运行 `upload_mdnice_images.py`，用 Markdown Nice 登录 JWT 批量上传图片；或把已经上传过图片的 HTML/Markdown 保存成 `mdnice-output.html`，再运行 `extract_remote_image_map.py` 按顺序抽取 URL。",
-            "3. 重新运行 `build_publish_package.py --remote-image-map platforms/zhihu-image-map.json --overwrite`。",
-            "4. 复制更新后的 `platforms/zhihu.html` 到知乎正文编辑器。",
+            "1. 安装依赖（macOS）：`brew install pandoc imagemagick node`、`npm install -g @mermaid-js/mermaid-cli`、`uv tool install md2zhihu --with pygments --with urllib3 --with requests --with mistune` (或 `pip install md2zhihu pygments urllib3 requests mistune`)。",
+            "2. 准备一个有写权限的公共仓库（gitee/github）作为图床。",
+            "3. 运行 `build_publish_package.py --zhihu-asset-repo \"git@github.com:用户名/仓库.git@分支\" --overwrite`。",
+            "4. 在知乎写文章页用“导入文档/粘贴 Markdown”载入 `platforms/zhihu.md`，标题单独填写。",
+            "",
+            "如果未安装 md2zhihu 或未配置图床，`zhihu.md` 会回退为带本地 `../assets/` 链接的版本，请按 `image-manifest.md` 从 `assets/` 手工补图。",
             "",
         ]
     )
@@ -2228,8 +2066,8 @@ def render_platform_guide(title: str, zhihu_remote_enabled: bool = False) -> str
         [
             "## 手工发布顺序",
             "",
-            "1. 打开首选文件，选择正文区域复制到平台编辑器。",
-            "2. 先确认图片是否已随富文本进入编辑器；知乎若仍是占位符，或其他平台拒绝 Base64 图片，按 `image-manifest.md` 的顺序从 `assets/` 上传或拖入图片。",
+            "1. 知乎：导入 `platforms/zhihu.md`；其他平台打开 `platforms/<平台>.html` 复制正文到编辑器。",
+            "2. 确认图片是否随内容进入编辑器；若被清洗，按 `image-manifest.md` 的顺序从 `assets/` 上传或拖入图片。",
             "3. 检查代码块、标题层级、链接、图片位置和平台要求的标题/封面/标签/分类。",
             "4. 先保存草稿或预览，再发布。",
             "",
@@ -2437,17 +2275,101 @@ def write_text(path: Path, text: str) -> None:
 def build_next_steps(warnings: list[dict[str, object]]) -> list[str]:
     steps = [
         "Open wechat.html in your browser to preview; copy/paste it into the WeChat Official Account editor.",
-        "For Zhihu/Toutiao/Zsxq/SMZDM, open platforms/<name>.html and paste into that platform's article editor (title is entered separately).",
-        "For Zhihu images, use --zhihu-cookie-file or --remote-image-map so zhihu.html contains HTTPS image URLs; otherwise replace the placeholders using image-manifest.md.",
+        "For Toutiao/Zsxq/SMZDM, open platforms/<name>.html and paste into that platform's article editor (title is entered separately).",
+        "For Zhihu, import platforms/zhihu.md via the Zhihu editor's '导入文档/粘贴 Markdown'; md2zhihu hosts images on the configured --zhihu-asset-repo git repo.",
+        "If md2zhihu is unavailable or no --zhihu-asset-repo was set, zhihu.md uses local ../assets/ links; upload images in order using image-manifest.md.",
         "If another platform drops embedded images after paste, use image-manifest.md to upload or drag images from assets/ in the original order.",
     ]
     if any(item.get("code") == "remote_image_download_failed" for item in warnings):
         steps.append(
             "Some remote images failed to download (e.g. expired Notion S3 presigned URLs). Refresh the source export, save the images into the same folder as your Markdown, and re-run the build."
         )
+    if any(item.get("code") == "md2zhihu_not_installed" for item in warnings):
+        steps.append(
+            "Install md2zhihu for native Zhihu math/diagram conversion and git-hosted images: "
+            "brew install pandoc imagemagick node && npm i -g @mermaid-js/mermaid-cli && uv tool install md2zhihu --with pygments --with urllib3 --with requests --with mistune (or pip install md2zhihu pygments urllib3 requests mistune)."
+        )
     if warnings:
         steps.append("Review report.json warnings before publishing.")
     return steps
+
+
+def _default_zhihu_converter() -> Callable[..., object]:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import zhihu_md2zhihu  # noqa: WPS433 - local helper shipped with this skill
+
+    return zhihu_md2zhihu.convert
+
+
+def build_zhihu_markdown(
+    title: str,
+    source_markdown: str,
+    output_dir: Path,
+    *,
+    asset_repo: str | None,
+    md2zhihu_bin: str | None = None,
+    download: bool = True,
+    converter: Optional[Callable[..., object]] = None,
+) -> tuple[str, bool, list[dict[str, object]]]:
+    """Produce ``platforms/zhihu.md`` via md2zhihu, with a plain-Markdown fallback.
+
+    Returns ``(relative_output_path, hosted, warnings)`` where ``hosted`` is
+    True only when md2zhihu ran and uploaded images to a git asset repo. The
+    Zhihu conversion must never crash the overall build: every failure path
+    writes a local-link ``zhihu.md`` and records a warning instead.
+    """
+    warnings: list[dict[str, object]] = []
+    dest = output_dir / "platforms" / "zhihu.md"
+
+    def write_local_fallback() -> str:
+        # zhihu.md lives under platforms/, so local asset links need ../assets/.
+        fallback_md = rewrite_asset_paths_for_platforms(source_markdown)
+        body = fallback_md if fallback_md.endswith("\n") else fallback_md + "\n"
+        write_text(dest, body)
+        return "platforms/zhihu.md"
+
+    if not asset_repo:
+        warnings.append(warning(
+            "zhihu_asset_repo_missing",
+            "未配置 --zhihu-asset-repo，知乎图片未托管到 Git 图床；zhihu.md 使用本地 ../assets/ 链接，"
+            "请按 image-manifest.md 从 assets/ 手工补图。",
+        ))
+        return write_local_fallback(), False, warnings
+
+    try:
+        convert = converter or _default_zhihu_converter()
+    except Exception as exc:  # import failure should degrade gracefully
+        warnings.append(warning("md2zhihu_not_installed", f"加载 md2zhihu 封装失败：{exc}"))
+        return write_local_fallback(), False, warnings
+
+    # md2zhihu resolves image paths relative to the source Markdown's directory,
+    # so write the source beside the output's assets/ folder.
+    zhihu_src = output_dir / ".zhihu-src.md"
+    src_body = source_markdown if source_markdown.endswith("\n") else source_markdown + "\n"
+    write_text(zhihu_src, src_body)
+    result: object | None = None
+    try:
+        result = convert(
+            zhihu_src,
+            dest,
+            asset_repo=asset_repo,
+            platform="zhihu",
+            download=download,
+            md2zhihu_bin=md2zhihu_bin,
+        )
+    except Exception as exc:  # never let Zhihu conversion crash the build
+        warnings.append(warning("zhihu_md2zhihu_failed", f"md2zhihu 调用异常：{exc}"))
+    finally:
+        zhihu_src.unlink(missing_ok=True)
+
+    if result is not None and getattr(result, "ok", False) and dest.exists():
+        return "platforms/zhihu.md", True, warnings
+
+    error_text = getattr(result, "error", None) if result is not None else None
+    if error_text:
+        code = "md2zhihu_not_installed" if "未找到 md2zhihu" in str(error_text) else "zhihu_md2zhihu_failed"
+        warnings.append(warning(code, str(error_text)))
+    return write_local_fallback(), False, warnings
 
 
 def build_package(
@@ -2457,9 +2379,10 @@ def build_package(
     strict: bool = False,
     table_mode: str = "auto",
     style: str = "magazine",
-    remote_image_map: Path | str | None = None,
-    zhihu_auto_upload: bool = True,
-    zhihu_cookie_file: Path | str | None = None,
+    zhihu_asset_repo: str | None = None,
+    md2zhihu_bin: str | None = None,
+    zhihu_download: bool = True,
+    zhihu_converter: Optional[Callable[..., object]] = None,
     open_after_build: bool = False,
     open_target: str = "zhihu",
     download_remote_images: bool = True,
@@ -2473,7 +2396,6 @@ def build_package(
         raise ValueError("Only --style magazine is supported in the first version.")
     if table_mode not in {"auto", "always", "never"}:
         raise ValueError("--table-mode must be auto, always, or never")
-    remote_lookup = load_remote_image_map(remote_image_map)
 
     ensure_output_dir(output, overwrite=overwrite)
     source_text = source.read_text(encoding="utf-8-sig")
@@ -2487,6 +2409,11 @@ def build_package(
     )
     warnings.extend(image_warnings)
     warnings.extend(detect_raw_html_warnings(normalized))
+
+    # Snapshot the image-localized body BEFORE table->PNG conversion: md2zhihu
+    # renders Markdown tables to native HTML for Zhihu, which beats shipping a
+    # rasterized table image, so the Zhihu pipeline gets the un-rasterized body.
+    zhihu_source_markdown = normalized
 
     table_report = {"converted": 0, "kept": count_pipe_tables(normalized), "mode": table_mode}
     if table_mode != "never":
@@ -2508,58 +2435,12 @@ def build_package(
 
     outputs: list[str] = ["wechat.html"]
 
-    # Optionally attempt to auto-upload images to Zhihu so we can emit the
-    # remote-image version of zhihu.html. This only kicks in when the user
-    # supplied a cookie file (or one exists at the default path), so the
-    # build keeps working offline.
-    zhihu_remote_missing: list[str] = []
-    zhihu_remote_enabled = False
-    zhihu_upload_error: str | None = None
-    if not remote_lookup and zhihu_auto_upload and image_manifest:
-        attempted_map, zhihu_upload_error = try_upload_zhihu_images(
-            image_manifest=image_manifest,
-            asset_base_dir=output,
-            cookie_file=zhihu_cookie_file,
-        )
-        if attempted_map:
-            remote_lookup = attempted_map
-            warnings.append(warning(
-                "zhihu_auto_upload",
-                f"Auto-uploaded {len(attempted_map) // 3} images to Zhihu using cookie file.",
-            ))
-        if zhihu_upload_error:
-            warnings.append(warning(
-                "zhihu_auto_upload_failed",
-                zhihu_upload_error,
-            ))
-
+    # Toutiao / Zsxq / SMZDM still share the magazine HTML renderer.
     platform_outputs: list[str] = []
     platform_markdown = rewrite_asset_paths_for_platforms(normalized)
-    for platform in PLATFORMS:
-        if platform not in RICH_HTML_PLATFORMS:
-            continue
+    for platform in RICH_HTML_PLATFORMS:
         platform_content = markdown_for_platform(platform_markdown, platform)
         html_relative = f"platforms/{platform}.html"
-
-        if platform == "zhihu" and remote_lookup:
-            # Inline the uploaded HTTPS URLs and emit a single zhihu.html that
-            # can be pasted directly without manual image upload.
-            remote_content, zhihu_remote_missing = rewrite_images_to_remote_urls(platform_content, remote_lookup)
-            if not zhihu_remote_missing:
-                write_text(
-                    output / html_relative,
-                    render_platform_html(
-                        "zhihu",
-                        title,
-                        remote_content,
-                        image_mode="inline",
-                        asset_base_dir=output / "platforms",
-                    ),
-                )
-                zhihu_remote_enabled = True
-                platform_outputs.append(html_relative)
-                continue
-
         image_mode = str(PLATFORM_PROFILES[platform].get("html_image_mode", "placeholder"))
         write_text(
             output / html_relative,
@@ -2575,19 +2456,27 @@ def build_package(
 
     outputs.extend(platform_outputs)
 
-    if image_manifest and not zhihu_remote_enabled:
-        warnings.append(warning(
-            "zhihu_image_upload_required",
-            "Zhihu rejects Base64 image paste in the real editor; zhihu.html uses placeholders until images are uploaded through the Zhihu image API or supplied via --remote-image-map.",
-        ))
+    # Zhihu: delegate to md2zhihu to produce an import-ready Markdown file with
+    # native equation images, mermaid/graphviz figures and git-hosted images.
+    zhihu_relative, zhihu_hosted, zhihu_warnings = build_zhihu_markdown(
+        title,
+        zhihu_source_markdown,
+        output,
+        asset_repo=zhihu_asset_repo,
+        md2zhihu_bin=md2zhihu_bin,
+        download=zhihu_download,
+        converter=zhihu_converter,
+    )
+    warnings.extend(zhihu_warnings)
+    outputs.append(zhihu_relative)
 
-    # Always ship a small image order list when local images exist. Zhihu needs
-    # uploaded HTTPS images, and other editors may still drop embedded images.
+    # Always ship a small image order list when local images exist. The Zhihu
+    # local-link fallback needs it, and other editors may drop embedded images.
     if image_manifest:
         write_text(output / "image-manifest.md", render_image_manifest(title, image_manifest))
         outputs.append("image-manifest.md")
 
-    platform_report = build_platform_report(zhihu_remote_enabled=zhihu_remote_enabled)
+    platform_report = build_platform_report(zhihu_hosted=zhihu_hosted)
 
     report: dict[str, object] = {
         "source": str(source),
@@ -2596,10 +2485,11 @@ def build_package(
         "assets": assets,
         "image_manifest": image_manifest,
         "platforms": platform_report,
-        "remote_images": {
-            "map": str(Path(remote_image_map).resolve()) if remote_image_map else None,
-            "mapped": len(remote_lookup),
-            "zhihu_missing": zhihu_remote_missing,
+        "zhihu": {
+            "engine": "md2zhihu",
+            "output": zhihu_relative,
+            "asset_repo": zhihu_asset_repo,
+            "hosted": zhihu_hosted,
         },
         "tables": table_report,
         "warnings": warnings,
@@ -2609,13 +2499,13 @@ def build_package(
 
     if open_after_build:
         target_map = {
-            "zhihu": "platforms/zhihu.html",
+            "zhihu": "platforms/zhihu.md",
             "wechat": "wechat.html",
             "toutiao": "platforms/toutiao.html",
             "zsxq": "platforms/zsxq.html",
             "smzdm": "platforms/smzdm.html",
         }
-        chosen_rel = target_map.get(open_target, "platforms/zhihu.html")
+        chosen_rel = target_map.get(open_target, "platforms/zhihu.md")
         chosen_path = output / chosen_rel
         if chosen_path.exists():
             _open_in_browser(chosen_path)
@@ -2657,19 +2547,24 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Visual style. First version supports magazine.",
     )
     parser.add_argument(
-        "--remote-image-map",
-        type=Path,
-        help="Optional JSON map from local asset paths to HTTPS image URLs. When provided, zhihu.html uses the remote URLs directly.",
+        "--zhihu-asset-repo",
+        default=os.environ.get("ZHIHU_ASSET_REPO") or os.environ.get("MD2ZHIHU_ASSET_REPO"),
+        help=(
+            "Git asset repo md2zhihu pushes Zhihu images to, e.g. "
+            '"git@github.com:user/repo.git@branch" or '
+            '"https://user:token@gitee.com/user/repo.git". '
+            "Defaults to $ZHIHU_ASSET_REPO / $MD2ZHIHU_ASSET_REPO. "
+            "Without it, zhihu.md falls back to local ../assets/ links."
+        ),
     )
     parser.add_argument(
-        "--zhihu-cookie-file",
-        type=Path,
-        help="Path to a Zhihu cookie JSON file (defaults to ~/.zhihu-cli/cookies.json if it exists). When present, the build attempts to auto-upload images to Zhihu so zhihu.html can ship with real HTTPS URLs.",
+        "--md2zhihu-bin",
+        help="Explicit path to the md2zhihu executable (defaults to the one on PATH).",
     )
     parser.add_argument(
-        "--no-zhihu-auto-upload",
+        "--no-zhihu-download",
         action="store_true",
-        help="Disable the automatic Zhihu image upload step even when a cookie file exists.",
+        help="Do not let md2zhihu fetch remote http(s) image URLs while converting Zhihu Markdown.",
     )
     parser.add_argument(
         "--no-download-remote-images",
@@ -2693,7 +2588,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--open-target",
         choices=["zhihu", "wechat", "toutiao", "zsxq", "smzdm"],
         default="zhihu",
-        help="Which HTML to open after build (default: zhihu).",
+        help="Which output to open after build (default: zhihu opens platforms/zhihu.md for import).",
     )
     return parser.parse_args(argv)
 
@@ -2709,9 +2604,9 @@ def main(argv: list[str] | None = None) -> int:
             strict=args.strict,
             table_mode=args.table_mode,
             style=args.style,
-            remote_image_map=args.remote_image_map,
-            zhihu_auto_upload=not args.no_zhihu_auto_upload,
-            zhihu_cookie_file=args.zhihu_cookie_file,
+            zhihu_asset_repo=args.zhihu_asset_repo,
+            md2zhihu_bin=args.md2zhihu_bin,
+            zhihu_download=not args.no_zhihu_download,
             open_after_build=args.open_after_build,
             open_target=args.open_target,
             download_remote_images=not args.no_download_remote_images,

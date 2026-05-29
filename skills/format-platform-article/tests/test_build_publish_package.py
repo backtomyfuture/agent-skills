@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -12,9 +13,26 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import build_publish_package  # noqa: E402
-import extract_remote_image_map  # noqa: E402
-import upload_mdnice_images  # noqa: E402
-import upload_zhihu_images  # noqa: E402
+import zhihu_md2zhihu  # noqa: E402
+
+
+def fake_zhihu_convert(source_md, dest_md, *, asset_repo=None, platform="zhihu", download=True, md2zhihu_bin=None, **_):
+    """Stand-in for md2zhihu: rewrites local image links to fake git-hosted URLs.
+
+    Mirrors the real wrapper's contract — write the converted Markdown to
+    ``dest_md`` and return a ``ConvertResult`` — so build_zhihu_markdown can be
+    exercised without installing md2zhihu or pushing to a real git repo.
+    """
+    dest = Path(dest_md)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src_text = Path(source_md).read_text(encoding="utf-8")
+    converted = re.sub(
+        r"\]\(assets/([^)]+)\)",
+        r"](https://gitee.example.com/u/bed/raw/branch/\1)",
+        src_text,
+    )
+    dest.write_text("<!-- md2zhihu -->\n" + converted, encoding="utf-8")
+    return zhihu_md2zhihu.ConvertResult(ok=True, md_output=dest, asset_repo=asset_repo)
 
 
 class BuildPublishPackageTests(unittest.TestCase):
@@ -152,7 +170,6 @@ class BuildPublishPackageTests(unittest.TestCase):
                 strict=False,
                 table_mode="never",
                 style="magazine",
-                zhihu_auto_upload=False,
                 remote_downloader=fake_downloader,
             )
 
@@ -171,11 +188,89 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertNotIn("example.com/remote.png", wechat_html)
             self.assertIn("data:image/png;base64,", wechat_html)
 
-            # Zhihu's placeholder must reference the local asset, not the
-            # original (often-expiring) URL.
-            zhihu_html = (output / "platforms" / "zhihu.html").read_text(encoding="utf-8")
-            self.assertNotIn("example.com/remote.png", zhihu_html)
-            self.assertIn("assets/remote_01.png", zhihu_html)
+            # Zhihu's Markdown fallback (no asset repo) must reference the local
+            # asset, not the original (often-expiring) URL.
+            zhihu_md = (output / "platforms" / "zhihu.md").read_text(encoding="utf-8")
+            self.assertNotIn("example.com/remote.png", zhihu_md)
+            self.assertIn("../assets/remote_01.png", zhihu_md)
+
+    def test_blockquote_with_callout_marker_renders_as_callout_badge(self):
+        # `> ⚠️ **注意** ：...` is the common Notion / source pattern. The
+        # WeChat renderer must NOT show this as a literary curly-quote block —
+        # those should be reserved for actual citations. Callout markers
+        # inside a blockquote should render with the same badge layout as a
+        # bare `⚠️ ...` paragraph, and the body must not duplicate the badge
+        # label (no leftover "**注意**：" prefix).
+        rendered = build_publish_package.render_wechat_html(
+            "标题",
+            "> ⚠️  **注意** ：这个价格可能是限时机制，建议先试试，抓紧窗口期。",
+        )
+
+        # Badge style of render_callout — orange small caps label.
+        self.assertIn("background:#fdf6ec", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
+        self.assertIn("letter-spacing:2px;text-transform:uppercase", rendered)
+        self.assertIn("注意", rendered)
+        # Body keeps the content but drops the redundant **注意** ： prefix.
+        self.assertIn("这个价格可能是限时机制", rendered)
+        self.assertNotIn("**注意**", rendered)
+        # No literary curly-quote glyph or italic when it is actually a callout.
+        self.assertNotIn("&ldquo;", rendered)
+        self.assertNotIn("font-style:italic", rendered)
+
+    def test_notion_style_callout_with_emoji_and_nested_quote_marker(self):
+        # Notion exports callouts as `> <emoji> >  **标签** ：body`. The renderer
+        # must:
+        # - treat the leading emoji as a callout marker (no literary curly-quote),
+        # - strip Notion's second `>` separator so it does not show up as text,
+        # - promote the bold prefix into the badge label (so "震撼" becomes the
+        #   badge instead of being shown twice — once as bold text, once not),
+        # - never leak the `>` character or the literal `**实测震撼**` into the
+        #   body of the rendered HTML.
+        rendered = build_publish_package.render_wechat_html(
+            "标题",
+            "> 😱 >  **实测震撼** ：刚上去看了一眼，吓我一跳——「82,000,000,000」！",
+        )
+
+        self.assertIn("background:#fdf6ec", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
+        # Badge shows the emoji + the bold-promoted custom label.
+        self.assertIn("😱", rendered)
+        self.assertIn("实测震撼", rendered)
+        # Body contains the real content, without the Notion artifacts.
+        self.assertIn("刚上去看了一眼", rendered)
+        self.assertIn("82,000,000,000", rendered)
+        self.assertNotIn("**实测震撼**", rendered)
+        self.assertNotIn("&gt;", rendered)
+        self.assertNotIn("&ldquo;", rendered)
+        self.assertNotIn("font-style:italic", rendered)
+
+    def test_notion_style_callout_gift_marker_uses_custom_bold_label(self):
+        rendered = build_publish_package.render_wechat_html(
+            "标题",
+            "> 🎁 >  **福利** ：我的 Max 套餐送了 820 亿 Token，欢迎加小圈领取 ⬇️",
+        )
+
+        self.assertIn("🎁", rendered)
+        self.assertIn("福利", rendered)
+        self.assertIn("820 亿 Token", rendered)
+        self.assertIn("欢迎加小圈领取", rendered)
+        self.assertNotIn("**福利**", rendered)
+        self.assertNotIn("&gt;", rendered)
+        self.assertNotIn("&ldquo;", rendered)
+
+    def test_blockquote_without_callout_marker_keeps_literary_quote(self):
+        # Plain blockquote (no warning marker) should still render with the
+        # editorial curly-quote treatment — this is a deliberate accent for
+        # actual quotations and must not be regressed by the callout fix.
+        rendered = build_publish_package.render_wechat_html(
+            "标题",
+            "> 把记忆当成资产，而不是日志。",
+        )
+
+        self.assertIn("&ldquo;", rendered)
+        self.assertIn("font-style:italic", rendered)
+        self.assertIn("把记忆当成资产", rendered)
 
     def test_render_wechat_html_has_no_auto_header(self):
         # The user authors the title in the WeChat editor's title field and any
@@ -408,7 +503,10 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertIn("server: ", rendered)
         self.assertNotIn("[SERVER-IP]", rendered)
 
-    def test_render_platform_html_uses_conservative_editor_markup(self):
+    def test_render_platform_html_uses_unified_magazine_layout(self):
+        # All four richtext platforms share the WeChat magazine renderer so
+        # every visual fix (callout badges, code blocks, table styling, etc.)
+        # lands in one place.
         rendered = build_publish_package.render_platform_html(
             "zhihu",
             "标题",
@@ -417,27 +515,29 @@ class BuildPublishPackageTests(unittest.TestCase):
         )
 
         self.assertIn("<title>标题 - 知乎正文粘贴版</title>", rendered)
-        self.assertIn("<h2>小节</h2>", rendered)
-        self.assertIn("<blockquote><p>引用</p></blockquote>", rendered)
-        self.assertIn("<pre><code>", rendered)
+        self.assertIn("<article", rendered)
+        self.assertIn("<h2 style=", rendered)
+        self.assertIn("小节</h2>", rendered)
+        self.assertIn("引用", rendered)
+        self.assertIn("<pre", rendered)
+        self.assertIn("<code", rendered)
         self.assertIn("【UUID】", rendered)
         self.assertIn("【服务器IP】", rendered)
         self.assertIn("图片占位 1", rendered)
         self.assertIn("../assets/a.png", rendered)
+        # Zhihu still must not inline base64 images (its editor rejects them).
         self.assertNotIn("data:image/", rendered)
         self.assertNotIn("先说价值", rendered)
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("阅读方式", rendered)
         self.assertNotIn("知乎 粘贴版", rendered)
-        self.assertNotIn("data-placeholder", rendered)
         self.assertNotIn("本文路线", rendered)
-        self.assertNotIn("<p><br></p>", rendered)
-        self.assertNotIn("<article", rendered)
-        self.assertNotIn("style=", rendered)
-        self.assertNotIn("<table", rendered)
-        self.assertNotIn("<hr", rendered)
 
     def test_render_zsxq_html_can_embed_local_images_as_data_uri(self):
+        # Zsxq (and the other three richtext platforms) now share the WeChat
+        # magazine renderer, so callouts render as a labeled badge instead of
+        # the legacy ▍-prefixed paragraph, and tables keep their styled
+        # markup instead of being collapsed into <ul>.
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         rendered = build_publish_package.render_platform_html(
             "zsxq",
@@ -450,38 +550,30 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("先说价值", rendered)
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("阅读方式", rendered)
-        self.assertIn("<p><br></p>", rendered)
-        self.assertIn("<h2>小节</h2>", rendered)
-        self.assertIn("<strong>▍⚠️ 注意：</strong>注意这件事。", rendered)
-        self.assertIn("<ul><li><strong>连接失败</strong><br><strong>解决：</strong>检查端口</li></ul>", rendered)
-        self.assertIn("<pre><code>", rendered)
+        self.assertIn("<article", rendered)
+        self.assertIn("<h2 style=", rendered)
+        self.assertIn("小节</h2>", rendered)
+        # ⚠️ callout renders as a labeled badge (warm cream background, orange
+        # left rule) — not the old ▍-prefixed plain paragraph.
+        self.assertIn("background:#fdf6ec", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
+        self.assertIn("注意这件事", rendered)
+        # Tables stay as styled HTML tables for visual consistency with WeChat.
+        self.assertIn("<table", rendered)
+        self.assertIn("连接失败", rendered)
+        self.assertIn("检查端口", rendered)
+        self.assertIn("<pre", rendered)
         self.assertIn("【服务器IP】", rendered)
         self.assertIn('src="data:image/png;base64,', rendered)
         self.assertIn("<img", rendered)
         self.assertNotIn("图片占位 1", rendered)
         self.assertNotIn("media/sample.png", rendered)
         self.assertNotIn("知识星球 粘贴版", rendered)
-        self.assertNotIn("style=", rendered)
-        self.assertNotIn("<table", rendered)
-        self.assertNotIn("<hr", rendered)
-        self.assertNotIn("<article", rendered)
-
-    def test_render_zsxq_budget_table_as_compact_action_list(self):
-        rendered = build_publish_package.render_platform_html(
-            "zsxq",
-            "标题",
-            "| **阈值** | **动作** |\n| --- | --- |\n| 50% | 邮件提醒 |\n| 90% | 邮件提醒 |\n| 100% | 邮件提醒 + 检查资源 |",
-            image_mode="data",
-        )
-
-        self.assertIn("<li><strong>50%</strong>：邮件提醒</li>", rendered)
-        self.assertIn("<li><strong>90%</strong>：邮件提醒</li>", rendered)
-        self.assertIn("<li><strong>100%</strong>：邮件提醒 + 检查资源</li>", rendered)
-        self.assertNotIn("<strong><strong>动作</strong>：</strong>", rendered)
-        self.assertNotIn("动作：</strong>邮件提醒", rendered)
-        self.assertNotIn("<table", rendered)
 
     def test_render_zsxq_ordered_steps_keep_numbering_across_images(self):
+        # The magazine renderer keeps a contiguous list numbering when an
+        # image is embedded between two `1.` items so readers see 1/2/3/4
+        # instead of 1/1/1/1.
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         rendered = build_publish_package.render_platform_html(
             "zsxq",
@@ -491,11 +583,10 @@ class BuildPublishPackageTests(unittest.TestCase):
             asset_base_dir=fixture_dir,
         )
 
-        self.assertIn("<p><strong>1.</strong>&nbsp;第一步</p>", rendered)
-        self.assertIn("<p><strong>2.</strong>&nbsp;第二步</p>", rendered)
-        self.assertIn("<p><strong>3.</strong>&nbsp;第三步</p>", rendered)
-        self.assertIn("<p><strong>4.</strong>&nbsp;第四步</p>", rendered)
-        self.assertNotIn("<ol>", rendered)
+        self.assertIn("01.</span>第一步", rendered)
+        self.assertIn("02.</span>第二步", rendered)
+        self.assertIn("03.</span>第三步", rendered)
+        self.assertIn("04.</span>第四步", rendered)
         self.assertIn('src="data:image/png;base64,', rendered)
 
     def test_render_zsxq_gcp_vless_does_not_inject_lead(self):
@@ -507,13 +598,18 @@ class BuildPublishPackageTests(unittest.TestCase):
         )
 
         self.assertIn("今天使用 Google One 赠送的 GCP 余额搭建 VLESS Reality。", rendered)
-        self.assertIn("<h2>Step 1</h2>", rendered)
+        self.assertIn("<h2 style=", rendered)
+        self.assertIn("Step 1</h2>", rendered)
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("不用域名、不用证书", rendered)
         self.assertNotIn("预算提醒", rendered)
         self.assertNotIn("先说价值", rendered)
 
-    def test_render_zsxq_promotes_high_value_paragraphs_to_visual_quotes(self):
+    def test_render_zsxq_renders_high_value_paragraphs_with_magazine_emphasis(self):
+        # The magazine renderer keeps bold runs as inline accents (yellow
+        # underline) rather than promoting them to ▍-prefixed pull quotes;
+        # readers still get the visual lift, without losing the paragraph
+        # flow around the bold phrase.
         rendered = build_publish_package.render_platform_html(
             "zsxq",
             "标题",
@@ -525,12 +621,13 @@ class BuildPublishPackageTests(unittest.TestCase):
             image_mode="data",
         )
 
-        self.assertIn("<p><strong>▍</strong>&nbsp;整个流程：<strong>创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通</strong>。</p>", rendered)
-        self.assertIn("<p><strong>▍</strong>&nbsp;<strong>把这整段链接复制保存到本地</strong>。这就是你的客户端配置，不要发到任何公开平台。</p>", rendered)
-        self.assertIn("<p><strong>▍</strong>&nbsp;Clash Verge Rev <strong>不支持直接导入</strong> <code>vless://</code> <strong>链接</strong>，需要手动新建一个本地 YAML 配置文件。</p>", rendered)
-        self.assertIn("<p><strong>▍</strong>&nbsp;不用时停止实例；确定不用了，删除 VM、磁盘、静态 IP 和项目，别留闲置资源。</p>", rendered)
-        self.assertNotIn("<blockquote>", rendered)
-        self.assertIn("<p>普通操作说明继续用正文。</p>", rendered)
+        self.assertIn("整个流程：", rendered)
+        self.assertIn("创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通", rendered)
+        self.assertIn("把这整段链接复制保存到本地", rendered)
+        self.assertIn("不支持直接导入", rendered)
+        self.assertIn("普通操作说明继续用正文。", rendered)
+        self.assertNotIn("▍", rendered)
+        self.assertIn("color:#1a1a1a;font-weight:700", rendered)
 
     def test_render_zsxq_quote_lab_contains_native_quote_experiments(self):
         rendered = build_publish_package.render_zsxq_quote_lab("标题")
@@ -570,24 +667,24 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("先说价值", rendered)
         self.assertNotIn("阅读方式", rendered)
-        self.assertIn("<h2>小节</h2>", rendered)
-        self.assertIn("<blockquote><p><strong>⚠️ 注意：</strong>注意这件事。</p></blockquote>", rendered)
-        self.assertIn("<p><strong>1.</strong>&nbsp;第一步</p>", rendered)
-        self.assertIn("<p><strong>2.</strong>&nbsp;第二步</p>", rendered)
-        self.assertIn("<li><strong>50%</strong>：邮件提醒</li>", rendered)
-        self.assertIn("<li><strong>100%</strong>：邮件提醒 + 检查资源</li>", rendered)
-        self.assertIn("<pre><code>", rendered)
+        self.assertIn("<article", rendered)
+        self.assertIn("<h2 style=", rendered)
+        self.assertIn("小节</h2>", rendered)
+        # ⚠️ callout renders as the unified magazine badge.
+        self.assertIn("background:#fdf6ec", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
+        self.assertIn("注意这件事", rendered)
+        self.assertIn("01.</span>第一步", rendered)
+        self.assertIn("02.</span>第二步", rendered)
+        self.assertIn("<table", rendered)
+        self.assertIn("50%", rendered)
+        self.assertIn("邮件提醒 + 检查资源", rendered)
+        self.assertIn("<pre", rendered)
         self.assertIn("【服务器IP】", rendered)
         self.assertIn('src="data:image/png;base64,', rendered)
-        self.assertIn("<blockquote><p>整个流程", rendered)
-        self.assertNotIn("<p><br></p>", rendered)
+        self.assertIn("整个流程", rendered)
         self.assertNotIn("▍", rendered)
         self.assertNotIn("今日头条 粘贴版", rendered)
-        self.assertNotIn("<article", rendered)
-        self.assertNotIn("style=", rendered)
-        self.assertNotIn("<table", rendered)
-        self.assertNotIn("<hr", rendered)
-        self.assertNotIn("<ol>", rendered)
 
     def test_platform_paragraph_split_does_not_break_bold_markup(self):
         markdown = (
@@ -600,18 +697,25 @@ class BuildPublishPackageTests(unittest.TestCase):
             with self.subTest(platform=platform):
                 rendered = build_publish_package.render_platform_html(platform, "标题", markdown)
 
-                self.assertIn("<strong>冲着技术去的，不是冲着 title 去的。</strong>", rendered)
+                # The magazine renderer styles bold runs as a single inline
+                # <span> (warm dark color + soft yellow underline) rather than
+                # a bare <strong>. We just need to make sure the bold cluster
+                # is rendered as one piece — no leaked Markdown asterisks and
+                # no broken-across-tags content.
+                self.assertIn("冲着技术去的，不是冲着 title 去的。", rendered)
+                self.assertIn("color:#1a1a1a;font-weight:700", rendered)
                 self.assertNotIn("**冲着技术", rendered)
                 self.assertNotIn("** 这说明", rendered)
 
     def test_platform_guide_maps_recommended_files(self):
         guide = build_publish_package.render_platform_guide("标题")
 
-        self.assertIn("platforms/zhihu.html", guide)
+        self.assertIn("platforms/zhihu.md", guide)
         self.assertIn("platforms/toutiao.html", guide)
         self.assertIn("platforms/zsxq.html", guide)
         self.assertIn("platforms/smzdm.html", guide)
-        self.assertIn("--zhihu-cookie-file", guide)
+        self.assertIn("--zhihu-asset-repo", guide)
+        self.assertIn("md2zhihu", guide)
         self.assertIn("知识星球常见问题", guide)
         self.assertIn("什么值得买官方账号投稿指引", guide)
 
@@ -664,117 +768,124 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertEqual(manifest[0]["label"], "图片 1")
         self.assertEqual(manifest[1]["label"], "表格")
 
-    def test_rewrite_images_to_remote_urls_uses_https_map(self):
-        rewritten, missing = build_publish_package.rewrite_images_to_remote_urls(
-            "![图](../assets/a.png)\n![远程](https://example.com/already.png)",
-            {"assets/a.png": "https://files.mdnice.com/user/1/a.png"},
-        )
-
-        self.assertIn("https://files.mdnice.com/user/1/a.png", rewritten)
-        self.assertIn("https://example.com/already.png", rewritten)
-        self.assertEqual(missing, [])
-
-    def test_remote_image_map_extractor_pairs_urls_by_order(self):
+    def test_build_zhihu_markdown_falls_back_without_asset_repo(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            template = root / "template.json"
-            source = root / "mdnice.html"
-            output = root / "map.json"
-            template.write_text(json.dumps({"../assets/a.png": "", "../assets/b.png": ""}), encoding="utf-8")
-            source.write_text(
-                '<figure><img src="https://files.mdnice.com/user/1/a.png"></figure>\n'
-                '<figure><img src="https://files.mdnice.com/user/1/b.jpg"></figure>',
-                encoding="utf-8",
+            output = Path(tmp) / "article.publish"
+            (output / "platforms").mkdir(parents=True)
+            relative, hosted, warnings = build_publish_package.build_zhihu_markdown(
+                "标题",
+                "## 小节\n\n![图](assets/a.png)\n",
+                output,
+                asset_repo=None,
             )
 
-            code = extract_remote_image_map.main(["--template", str(template), "--source", str(source), "--output", str(output)])
-            data = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(relative, "platforms/zhihu.md")
+            self.assertFalse(hosted)
+            zhihu_md = (output / "platforms" / "zhihu.md").read_text(encoding="utf-8")
+            # Fallback rewrites local asset links to ../assets/ so the Markdown
+            # still points at real files relative to platforms/.
+            self.assertIn("../assets/a.png", zhihu_md)
+            self.assertTrue(any(item["code"] == "zhihu_asset_repo_missing" for item in warnings))
+            # The temp md2zhihu source must not linger in the output dir.
+            self.assertFalse((output / ".zhihu-src.md").exists())
 
-            self.assertEqual(code, 0)
-            self.assertEqual(data["../assets/a.png"], "https://files.mdnice.com/user/1/a.png")
-            self.assertEqual(data["../assets/b.png"], "https://files.mdnice.com/user/1/b.jpg")
+    def test_build_zhihu_markdown_uses_converter_when_repo_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "article.publish"
+            (output / "platforms").mkdir(parents=True)
+            relative, hosted, warnings = build_publish_package.build_zhihu_markdown(
+                "标题",
+                "## 小节\n\n![图](assets/a.png)\n",
+                output,
+                asset_repo="git@github.com:u/bed.git@main",
+                converter=fake_zhihu_convert,
+            )
 
-    def test_upload_mdnice_images_builds_map_without_printing_token(self):
-        original_upload = upload_mdnice_images.upload_mdnice
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                assets = root / "assets"
-                platforms = root / "platforms"
-                assets.mkdir()
-                platforms.mkdir()
-                image = assets / "a.png"
-                image.write_bytes(b"png")
-                template = platforms / "zhihu-image-map.template.json"
-                output = platforms / "zhihu-image-map.json"
-                template.write_text(json.dumps({"../assets/a.png": ""}), encoding="utf-8")
+            self.assertEqual(relative, "platforms/zhihu.md")
+            self.assertTrue(hosted)
+            zhihu_md = (output / "platforms" / "zhihu.md").read_text(encoding="utf-8")
+            self.assertIn("https://gitee.example.com/u/bed/raw/branch/a.png", zhihu_md)
+            self.assertNotIn("](assets/a.png)", zhihu_md)
+            self.assertEqual(warnings, [])
+            self.assertFalse((output / ".zhihu-src.md").exists())
 
-                def fake_upload(path, token, origin, endpoint=upload_mdnice_images.MDNICE_UPLOAD_URL):
-                    self.assertEqual(token, "Bearer secret-token")
-                    self.assertEqual(path.resolve(), image.resolve())
-                    return "https://files.mdnice.com/user/1/a.png"
+    def test_build_zhihu_markdown_warns_when_md2zhihu_missing(self):
+        def missing_converter(*_args, **_kwargs):
+            return zhihu_md2zhihu.ConvertResult(ok=False, error=zhihu_md2zhihu.INSTALL_HINT)
 
-                upload_mdnice_images.upload_mdnice = fake_upload
-                code = upload_mdnice_images.main(
-                    [
-                        "--template",
-                        str(template),
-                        "--output",
-                        str(output),
-                        "--token",
-                        "secret-token",
-                    ]
-                )
-                data = json.loads(output.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "article.publish"
+            (output / "platforms").mkdir(parents=True)
+            relative, hosted, warnings = build_publish_package.build_zhihu_markdown(
+                "标题",
+                "正文\n",
+                output,
+                asset_repo="git@github.com:u/bed.git@main",
+                converter=missing_converter,
+            )
 
-                self.assertEqual(code, 0)
-                self.assertEqual(data["../assets/a.png"], "https://files.mdnice.com/user/1/a.png")
-        finally:
-            upload_mdnice_images.upload_mdnice = original_upload
+            self.assertEqual(relative, "platforms/zhihu.md")
+            self.assertFalse(hosted)
+            self.assertTrue((output / "platforms" / "zhihu.md").exists())
+            self.assertTrue(any(item["code"] == "md2zhihu_not_installed" for item in warnings))
 
-    def test_upload_zhihu_images_builds_map_from_cookie_file(self):
-        original_upload = upload_zhihu_images.upload_zhihu_image
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                assets = root / "assets"
-                platforms = root / "platforms"
-                assets.mkdir()
-                platforms.mkdir()
-                image = assets / "a.png"
-                image.write_bytes(b"png")
-                template = platforms / "zhihu-image-map.template.json"
-                output = platforms / "zhihu-image-map.json"
-                cookie_file = root / "cookies.json"
-                template.write_text(json.dumps({"../assets/a.png": ""}), encoding="utf-8")
-                cookie_file.write_text(
-                    json.dumps({"z_c0": "auth", "_xsrf": "csrf", "d_c0": "device"}),
-                    encoding="utf-8",
-                )
+    def test_zhihu_md2zhihu_convert_reports_missing_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = zhihu_md2zhihu.convert(
+                Path(tmp) / "src.md",
+                Path(tmp) / "out" / "zhihu.md",
+                asset_repo="git@github.com:u/bed.git@main",
+                md2zhihu_bin="md2zhihu-definitely-not-on-path",
+            )
 
-                def fake_upload(opener, headers, file_path, source):
-                    self.assertEqual(headers["x-xsrftoken"], "csrf")
-                    self.assertEqual(file_path.resolve(), image.resolve())
-                    self.assertEqual(source, "article")
-                    return "https://picx.zhimg.com/v2-test.png"
+            self.assertFalse(result.ok)
+            self.assertIsNotNone(result.error)
 
-                upload_zhihu_images.upload_zhihu_image = fake_upload
-                code = upload_zhihu_images.main(
-                    [
-                        "--template",
-                        str(template),
-                        "--output",
-                        str(output),
-                        "--cookie-file",
-                        str(cookie_file),
-                    ]
-                )
-                data = json.loads(output.read_text(encoding="utf-8"))
+    def test_build_zhihu_markdown_handles_converter_exception(self):
+        def bad_converter(*_args, **_kwargs):
+            raise RuntimeError("some unexpected error")
 
-                self.assertEqual(code, 0)
-                self.assertEqual(data["../assets/a.png"], "https://picx.zhimg.com/v2-test.png")
-        finally:
-            upload_zhihu_images.upload_zhihu_image = original_upload
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "article.publish"
+            (output / "platforms").mkdir(parents=True)
+            relative, hosted, warnings = build_publish_package.build_zhihu_markdown(
+                "标题",
+                "## 小节\n\n![图](assets/a.png)\n",
+                output,
+                asset_repo="git@github.com:u/bed.git@main",
+                converter=bad_converter,
+            )
+
+            self.assertEqual(relative, "platforms/zhihu.md")
+            self.assertFalse(hosted)
+            self.assertTrue((output / "platforms" / "zhihu.md").exists())
+            self.assertTrue(any(
+                item["code"] == "zhihu_md2zhihu_failed" and "md2zhihu 调用异常：some unexpected error" in str(item["message"])
+                for item in warnings
+            ))
+
+    def test_build_zhihu_markdown_warns_on_non_install_convert_error(self):
+        def failed_converter(*_args, **_kwargs):
+            return zhihu_md2zhihu.ConvertResult(ok=False, error="some runtime error from md2zhihu")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "article.publish"
+            (output / "platforms").mkdir(parents=True)
+            relative, hosted, warnings = build_publish_package.build_zhihu_markdown(
+                "标题",
+                "## 小节\n\n![图](assets/a.png)\n",
+                output,
+                asset_repo="git@github.com:u/bed.git@main",
+                converter=failed_converter,
+            )
+
+            self.assertEqual(relative, "platforms/zhihu.md")
+            self.assertFalse(hosted)
+            self.assertTrue((output / "platforms" / "zhihu.md").exists())
+            self.assertTrue(any(
+                item["code"] == "zhihu_md2zhihu_failed" and "some runtime error from md2zhihu" in str(item["message"])
+                for item in warnings
+            ))
 
     def test_build_package_creates_expected_outputs(self):
         fixture = Path(__file__).resolve().parent / "fixtures" / "article.md"
@@ -787,15 +898,16 @@ class BuildPublishPackageTests(unittest.TestCase):
                 strict=False,
                 table_mode="never",
                 style="magazine",
-                zhihu_auto_upload=False,
                 download_remote_images=False,
             )
 
             self.assertEqual(result["title"], "多平台发布测试文章")
 
             # The slimmed-down output only ships the final paste-ready files.
+            # Zhihu is now an import-ready Markdown (md2zhihu), not HTML.
             self.assertTrue((output / "wechat.html").exists())
-            self.assertTrue((output / "platforms" / "zhihu.html").exists())
+            self.assertTrue((output / "platforms" / "zhihu.md").exists())
+            self.assertFalse((output / "platforms" / "zhihu.html").exists())
             self.assertTrue((output / "platforms" / "toutiao.html").exists())
             self.assertTrue((output / "platforms" / "zsxq.html").exists())
             self.assertTrue((output / "platforms" / "smzdm.html").exists())
@@ -812,7 +924,7 @@ class BuildPublishPackageTests(unittest.TestCase):
             ]:
                 self.assertFalse((output / stale).exists(), f"{stale} should not be emitted")
             for stale in [
-                "zhihu.md",
+                "zhihu.html",
                 "zhihu-embedded.html",
                 "zhihu-remote.html",
                 "zhihu-image-map.template.json",
@@ -828,28 +940,28 @@ class BuildPublishPackageTests(unittest.TestCase):
                     f"platforms/{stale} should not be emitted",
                 )
 
-            # Zhihu needs uploaded HTTPS images. Without cookies or a remote
-            # image map, zhihu.html must use explicit placeholders, while the
-            # manifest ships the manual replacement order.
+            # The Zhihu local-link fallback still ships the manual upload order.
             self.assertTrue((output / "image-manifest.md").exists())
 
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["tables"]["kept"], 1)
             self.assertIn("wechat.html", report["outputs"])
-            self.assertIn("platforms/zhihu.html", report["outputs"])
+            self.assertIn("platforms/zhihu.md", report["outputs"])
+            self.assertNotIn("platforms/zhihu.html", report["outputs"])
             self.assertIn("platforms/toutiao.html", report["outputs"])
             self.assertIn("platforms/zsxq.html", report["outputs"])
             self.assertIn("platforms/smzdm.html", report["outputs"])
             self.assertIn("image-manifest.md", report["outputs"])
-            self.assertNotIn("platforms/zhihu-embedded.html", report["outputs"])
-            self.assertNotIn("platforms/zhihu-image-map.template.json", report["outputs"])
-            self.assertEqual(report["platforms"]["zhihu"]["html_image_mode"], "placeholder")
+            self.assertEqual(report["platforms"]["zhihu"]["recommended"], "platforms/zhihu.md")
+            self.assertEqual(report["platforms"]["zhihu"]["html_image_mode"], "markdown-local")
             self.assertEqual(report["platforms"]["toutiao"]["html_image_mode"], "data")
             self.assertEqual(report["platforms"]["zsxq"]["html_image_mode"], "data")
             self.assertEqual(report["platforms"]["smzdm"]["html_image_mode"], "data")
-            self.assertIsNone(report["remote_images"]["map"])
+            self.assertEqual(report["zhihu"]["engine"], "md2zhihu")
+            self.assertFalse(report["zhihu"]["hosted"])
+            self.assertIsNone(report["zhihu"]["asset_repo"])
             self.assertEqual(report["image_manifest"][0]["src"], "assets/sample.png")
-            self.assertTrue(any(item["code"] == "zhihu_image_upload_required" for item in report["warnings"]))
+            self.assertTrue(any(item["code"] == "zhihu_asset_repo_missing" for item in report["warnings"]))
 
             wechat_html = (output / "wechat.html").read_text(encoding="utf-8")
             self.assertIn("data:image/png;base64,", wechat_html)
@@ -859,38 +971,35 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertIn("data:image/png;base64,", smzdm_html)
             self.assertNotIn("什么值得买 粘贴版", smzdm_html)
             self.assertNotIn("<h1", smzdm_html)
-            self.assertNotIn("<article", smzdm_html)
             self.assertNotIn("<header", smzdm_html)
+            # SMZDM now uses the same unified magazine wrapper as WeChat.
+            self.assertIn("<article", smzdm_html)
+            self.assertIn("什么值得买正文粘贴版", smzdm_html)
 
-            zhihu_html = (output / "platforms" / "zhihu.html").read_text(encoding="utf-8")
-            # Zhihu's real editor rejects Base64 images, so no-cookie output is
-            # intentionally a pasteable body with explicit image placeholders.
-            self.assertIn("图片占位 1", zhihu_html)
-            self.assertIn("../assets/sample.png", zhihu_html)
-            self.assertNotIn("data:image/png;base64,", zhihu_html)
-            self.assertNotIn("先说价值", zhihu_html)
-            self.assertNotIn("先说结论", zhihu_html)
-            self.assertNotIn("阅读方式", zhihu_html)
+            zhihu_md = (output / "platforms" / "zhihu.md").read_text(encoding="utf-8")
+            # Without an asset repo, zhihu.md keeps local ../assets/ links and
+            # never embeds Base64 images.
+            self.assertIn("../assets/sample.png", zhihu_md)
+            self.assertNotIn("data:image/png;base64,", zhihu_md)
+            self.assertNotIn("先说价值", zhihu_md)
+            self.assertNotIn("先说结论", zhihu_md)
+            self.assertNotIn("阅读方式", zhihu_md)
 
             toutiao_html = (output / "platforms" / "toutiao.html").read_text(encoding="utf-8")
             self.assertIn("data:image/png;base64,", toutiao_html)
 
             zsxq_html = (output / "platforms" / "zsxq.html").read_text(encoding="utf-8")
             self.assertIn("data:image/png;base64,", zsxq_html)
-            self.assertIn("▍", zsxq_html)
+            self.assertIn("<article", zsxq_html)
+            self.assertIn("知识星球长文粘贴版", zsxq_html)
+            self.assertNotIn("▍", zsxq_html)
 
             self.assertTrue(any(item["code"] == "remote_image" for item in report["warnings"]))
 
-    def test_build_package_with_remote_image_map_creates_zhihu_remote_html(self):
+    def test_build_package_hosts_zhihu_images_via_md2zhihu(self):
         fixture = Path(__file__).resolve().parent / "fixtures" / "article.md"
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            output = root / "article.publish"
-            remote_map = root / "zhihu-image-map.json"
-            remote_map.write_text(
-                json.dumps({"../assets/sample.png": "https://files.mdnice.com/user/1/sample.png"}),
-                encoding="utf-8",
-            )
+            output = Path(tmp) / "article.publish"
 
             report = build_publish_package.build_package(
                 fixture,
@@ -899,62 +1008,25 @@ class BuildPublishPackageTests(unittest.TestCase):
                 strict=False,
                 table_mode="never",
                 style="magazine",
-                remote_image_map=remote_map,
-                zhihu_auto_upload=False,
+                download_remote_images=False,
+                zhihu_asset_repo="git@github.com:u/bed.git@main",
+                zhihu_converter=fake_zhihu_convert,
+                open_after_build=False,
             )
-            # The slimmed-down design folds the remote-image variant into
-            # zhihu.html itself; there is no separate zhihu-remote.html now.
-            zhihu_html = (output / "platforms" / "zhihu.html").read_text(encoding="utf-8")
 
-            self.assertIn("platforms/zhihu.html", report["outputs"])
-            self.assertFalse((output / "platforms" / "zhihu-remote.html").exists())
-            self.assertIn('src="https://files.mdnice.com/user/1/sample.png"', zhihu_html)
-            self.assertIn('src="https://example.com/remote.png"', zhihu_html)
-            self.assertNotIn("图片占位 1", zhihu_html)
-            self.assertEqual(report["remote_images"]["zhihu_missing"], [])
+            zhihu_md = (output / "platforms" / "zhihu.md").read_text(encoding="utf-8")
 
-    def test_build_package_auto_uploads_zhihu_images_when_available(self):
-        fixture = Path(__file__).resolve().parent / "fixtures" / "article.md"
-        original_try_upload = build_publish_package.try_upload_zhihu_images
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                output = root / "article.publish"
-                cookie_file = root / "cookies.json"
-                cookie_file.write_text("{}", encoding="utf-8")
-
-                def fake_try_upload(image_manifest, asset_base_dir, cookie_file, verbose=True):
-                    self.assertEqual(Path(cookie_file).name, "cookies.json")
-                    self.assertTrue((asset_base_dir / "assets" / "sample.png").exists())
-                    return (
-                        {
-                            "assets/sample.png": "https://picx.zhimg.com/v2-api-upload.png",
-                            "../assets/sample.png": "https://picx.zhimg.com/v2-api-upload.png",
-                        },
-                        None,
-                    )
-
-                build_publish_package.try_upload_zhihu_images = fake_try_upload
-                report = build_publish_package.build_package(
-                    fixture,
-                    output,
-                    overwrite=False,
-                    strict=False,
-                    table_mode="never",
-                    style="magazine",
-                    zhihu_cookie_file=cookie_file,
-                    open_after_build=False,
-                )
-                zhihu_html = (output / "platforms" / "zhihu.html").read_text(encoding="utf-8")
-
-                self.assertEqual(report["platforms"]["zhihu"]["html_image_mode"], "remote")
-                self.assertIn('src="https://picx.zhimg.com/v2-api-upload.png"', zhihu_html)
-                self.assertIn('src="https://example.com/remote.png"', zhihu_html)
-                self.assertNotIn("data:image/png;base64,", zhihu_html)
-                self.assertNotIn("图片占位 1", zhihu_html)
-                self.assertFalse(any(item["code"] == "zhihu_image_upload_required" for item in report["warnings"]))
-        finally:
-            build_publish_package.try_upload_zhihu_images = original_try_upload
+            self.assertIn("platforms/zhihu.md", report["outputs"])
+            self.assertTrue(report["zhihu"]["hosted"])
+            self.assertEqual(report["zhihu"]["asset_repo"], "git@github.com:u/bed.git@main")
+            self.assertEqual(report["platforms"]["zhihu"]["html_image_mode"], "markdown")
+            # md2zhihu rewrote the local image link to a git-hosted HTTPS URL.
+            self.assertIn("https://gitee.example.com/u/bed/raw/branch/sample.png", zhihu_md)
+            self.assertNotIn("../assets/sample.png", zhihu_md)
+            self.assertNotIn("data:image/png;base64,", zhihu_md)
+            self.assertFalse(
+                any(item["code"] == "zhihu_asset_repo_missing" for item in report["warnings"])
+            )
 
     def test_existing_output_without_overwrite_fails(self):
         fixture = Path(__file__).resolve().parent / "fixtures" / "article.md"
