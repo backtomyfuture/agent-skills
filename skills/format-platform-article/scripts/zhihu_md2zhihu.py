@@ -49,8 +49,8 @@ INSTALL_HINT = (
 )
 ASSET_REPO_HINT = (
     "未提供知乎 Git 图床仓库。请用 --zhihu-asset-repo 传入一个有写权限的公共仓库，"
-    '例如 "git@github.com:用户名/仓库.git@分支" 或 '
-    '"https://用户名:令牌@gitee.com/用户名/仓库.git"。'
+    '例如 "https://github.com/backtomyfuture/images.git" 或 '
+    '"git@github.com:backtomyfuture/images.git"。'
 )
 DEFAULT_TIMEOUT_SECONDS = 600
 
@@ -204,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True, help="Destination zhihu.md path.")
     parser.add_argument(
         "--asset-repo",
-        help='Git asset repo for image hosting, e.g. "git@github.com:user/repo.git@branch".',
+        help='Git asset repo for image hosting, e.g. "https://github.com/backtomyfuture/images.git".',
     )
     parser.add_argument("--platform", default="zhihu", help="md2zhihu target platform (default: zhihu).")
     parser.add_argument("--no-download", action="store_true", help="Do not let md2zhihu fetch remote image URLs.")
