@@ -2054,7 +2054,7 @@ def render_platform_guide(title: str, zhihu_hosted: bool = False) -> str:
             "",
             "1. 安装依赖（macOS）：`brew install pandoc imagemagick node`、`npm install -g @mermaid-js/mermaid-cli`、`uv tool install md2zhihu --with pygments --with urllib3 --with requests --with mistune` (或 `pip install md2zhihu pygments urllib3 requests mistune`)。",
             "2. 准备一个有写权限的公共仓库（gitee/github）作为图床。",
-            "3. 运行 `build_publish_package.py --zhihu-asset-repo \"git@github.com:用户名/仓库.git@分支\" --overwrite`。",
+            "3. 运行 `build_publish_package.py --zhihu-asset-repo \"https://github.com/backtomyfuture/images.git\" --overwrite`。",
             "4. 在知乎写文章页用“导入文档/粘贴 Markdown”载入 `platforms/zhihu.md`，标题单独填写。",
             "",
             "如果未安装 md2zhihu 或未配置图床，`zhihu.md` 会回退为带本地 `../assets/` 链接的版本，请按 `image-manifest.md` 从 `assets/` 手工补图。",
@@ -2551,8 +2551,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=os.environ.get("ZHIHU_ASSET_REPO") or os.environ.get("MD2ZHIHU_ASSET_REPO"),
         help=(
             "Git asset repo md2zhihu pushes Zhihu images to, e.g. "
-            '"git@github.com:user/repo.git@branch" or '
-            '"https://user:token@gitee.com/user/repo.git". '
+            '"https://github.com/backtomyfuture/images.git" or '
+            '"git@github.com:backtomyfuture/images.git". '
             "Defaults to $ZHIHU_ASSET_REPO / $MD2ZHIHU_ASSET_REPO. "
             "Without it, zhihu.md falls back to local ../assets/ links."
         ),

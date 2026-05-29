@@ -32,12 +32,12 @@ npm install -g @mermaid-js/mermaid-cli       # mermaid -> image (mmdc)
 uv tool install md2zhihu --with pygments --with urllib3 --with requests --with mistune  # the converter CLI
 ```
 
-   Create an empty public repo you have push access to (GitHub or Gitee) to use as an image bed, e.g. `git@github.com:you/zhihu-img.git`. Provide it to the build via `--zhihu-asset-repo` or the `ZHIHU_ASSET_REPO` env var. A branch suffix is supported (`...repo.git@master`).
+   Create an empty public repo you have push access to (GitHub or Gitee) to use as an image bed, e.g. `https://github.com/backtomyfuture/images.git`. Provide it to the build via `--zhihu-asset-repo` or the `ZHIHU_ASSET_REPO` env var. A branch suffix is supported (`...repo.git@master`).
 
 4. Run the builder. It produces `platforms/zhihu.md` (Zhihu import format) plus the paste-ready HTML for the other platforms, and opens `platforms/zhihu.md` when done:
 
 ```bash
-ZHIHU_ASSET_REPO="git@github.com:you/zhihu-img.git@master" \
+ZHIHU_ASSET_REPO="https://github.com/backtomyfuture/images.git" \
 python3 /Users/jarod/Documents/agent-skills/skills/format-platform-article/scripts/build_publish_package.py \
   /path/to/article.md \
   --output /path/to/article.publish \
@@ -104,7 +104,7 @@ Do not expect legacy intermediate files such as `preview.html`, `copy.html`, `we
 - `--strict`: fail if compatibility warnings are detected.
 - `--table-mode auto|always|never`: control table image conversion. Use `auto` by default.
 - `--style magazine`: first-version default. Other styles are intentionally rejected until implemented.
-- `--zhihu-asset-repo <git-url>`: Git repo md2zhihu pushes Zhihu images to and rewrites as raw HTTPS URLs, e.g. `git@github.com:you/zhihu-img.git@master` or `https://user:token@gitee.com/you/zhihu-img.git`. Defaults to `$ZHIHU_ASSET_REPO` / `$MD2ZHIHU_ASSET_REPO`. Without it, `zhihu.md` keeps local `../assets/` links.
+- `--zhihu-asset-repo <git-url>`: Git repo md2zhihu pushes Zhihu images to and rewrites as raw HTTPS URLs, e.g. `https://github.com/backtomyfuture/images.git` or `git@github.com:backtomyfuture/images.git`. Defaults to `$ZHIHU_ASSET_REPO` / `$MD2ZHIHU_ASSET_REPO`. Without it, `zhihu.md` keeps local `../assets/` links.
 - `--md2zhihu-bin /path/to/md2zhihu`: explicit path to the md2zhihu executable. Defaults to the one found on `PATH`.
 - `--no-zhihu-download`: tell md2zhihu not to fetch remote `http(s)` image URLs while converting (it downloads and re-hosts them by default).
 - `--no-download-remote-images`: skip downloading remote (`http(s)`) Markdown images into `assets/`. By default the build fetches every remote URL (including Notion S3 presigned URLs that expire within an hour) so the cross-platform HTML files keep working after the original URL dies. Disable only if you know the remote URLs are stable and you want zero outbound traffic.
@@ -117,7 +117,7 @@ Zhihu output delegates to the [`md2zhihu`](https://github.com/drmingdrmer/md2zhi
 
 ```bash
 md2zhihu <source.md> -o platforms/zhihu.md -p zhihu --download \
-  -r "git@github.com:you/zhihu-img.git@master"
+  -r "https://github.com/backtomyfuture/images.git"
 ```
 
 md2zhihu requires Pandoc, ImageMagick, the mermaid CLI (`mmdc`), and a Git repo it can push to. It rasterizes LaTeX, mermaid, and graphviz blocks to images and rewrites every local/remote image to a raw HTTPS URL in the asset repo. **It does not run on Windows.**
