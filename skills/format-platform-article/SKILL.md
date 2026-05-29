@@ -1,3 +1,4 @@
+---
 name: format-platform-article
 description: Convert a local Markdown article and media folder into a WeChat-first multi-platform publish package. Use this skill after notion-to-md exports Markdown/media and before publishing to WeChat Official Account, Zhihu, Toutiao, Zsxq, SMZDM, or similar rich-text article platforms. Generates paste-ready HTML files (WeChat/Toutiao/Zsxq/SMZDM), an import-ready Zhihu Markdown via md2zhihu, local assets, an image fallback manifest, and report.json. You must use this skill whenever the user wants to publish Markdown articles to Chinese social/tech media platforms, format posts for WeChat/Zhihu/Toutiao/Zsxq/SMZDM, or build a publish package from a Markdown file, even if they don't explicitly ask for a "publish package".
 ---
