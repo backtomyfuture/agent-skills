@@ -37,7 +37,8 @@ REMOTE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".b
 PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm")
 # Zhihu is intentionally NOT in RICH_HTML_PLATFORMS: it is produced as an
 # import-ready Markdown file (platforms/zhihu.md) by md2zhihu, not as
-# paste-ready HTML. The other three still share the magazine HTML renderer.
+# paste-ready HTML. Zsxq is also special-cased later because its editor handles
+# low-style native tags better than the shared magazine wrapper.
 RICH_HTML_PLATFORMS = ("toutiao", "zsxq", "smzdm")
 PLATFORM_PROFILES: dict[str, dict[str, object]] = {
     "zhihu": {
@@ -94,10 +95,11 @@ PLATFORM_PROFILES: dict[str, dict[str, object]] = {
         "html_image_mode": "data",
         "editor_model": "网页端长文章，官方说明支持 100000 字符、图文混排、超链接和一些 Markdown 语法。",
         "image_strategy": "复制 zsxq.html 的富文本结构，图片已用 Base64 内嵌；若平台拒绝内嵌图片，再按 image-manifest.md 从 assets/ 兜底上传。",
-        "code_strategy": "代码块转为浅色 pre/code 富文本，避免 Markdown 粘贴后观感过于朴素。",
+        "code_strategy": "代码块保留为原生 pre/code，避免复杂内联样式被知识星球清洗后变形。",
         "notes": [
             "长文走网页版“长文章”，不要用 App 主题流承载长教程。",
-            "优先用 zsxq.html 获得更好的段落、标题、视觉引用和代码块观感；如果图片被清洗，再按 image-manifest.md 从 assets/ 手工补传。",
+            "zsxq.html 刻意不使用公众号杂志卡片、背景和复杂 inline style；标题、段落、列表、代码块尽量保留为平台更稳的原生结构。",
+            "高价值段落使用文本安全的 ▍ 标记；如果图片被清洗，再按 image-manifest.md 从 assets/ 手工补传。",
             "如果链接被吞或样式异常，改用完整裸链接或编辑器内插入超链接。",
         ],
         "sources": [
@@ -729,14 +731,32 @@ def image_label(alt_text: str, index: int) -> str:
     return label
 
 
+def sniff_image_mime(data: bytes) -> str | None:
+    if len(data) >= 12:
+        if data[:3] == b"\xff\xd8\xff":
+            return "image/jpeg"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            return "image/png"
+        if data[:6] in (b"GIF87a", b"GIF89a"):
+            return "image/gif"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        if data[:4] == b"<svg" or data[:5] == b"<?xml":
+            return "image/svg+xml"
+    return None
+
+
 def image_src_for_mode(src: str, image_mode: str, asset_base_dir: Path | None = None) -> str:
     if image_mode != "data" or REMOTE_RE.match(src) or asset_base_dir is None:
         return src
     path = (asset_base_dir / src).resolve()
     if not path.exists() or not path.is_file():
         return src
-    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    raw = path.read_bytes()
+    # Notion exports often drop file extensions (e.g. image_*.bin), so we sniff
+    # the magic bytes first and only fall back to the extension-based guess.
+    mime_type = sniff_image_mime(raw) or mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    encoded = base64.b64encode(raw).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 
 
@@ -861,7 +881,7 @@ def render_blocks(
             quote_lines.clear()
             return
         html_lines.append(
-            '<section style="margin:30px 0;padding:20px 24px 18px;background:#fdf6ec;'
+            '<section style="margin:30px 0;padding:18px 24px;background:#fdf6ec;'
             'border-left:3px solid #c2410c;border-radius:2px 10px 10px 2px;'
             'width:100%;box-sizing:border-box;position:relative;">'
             '<p style="margin:0 0 6px;color:#c2410c;font-size:22px;line-height:1;'
@@ -1574,12 +1594,12 @@ def render_platform_html(
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    # All four richtext platforms (Zhihu, Toutiao, Zsxq, SMZDM) share the
-    # WeChat magazine renderer so every callout / emoji badge / table fix
-    # lands in one place. The legacy platform-specific renderers
-    # (`render_platform_blocks`, `render_toutiao_blocks`, `render_zsxq_blocks`)
-    # remain in this module only as a fallback reference and are not used
-    # by the default build path.
+    if platform == "zsxq":
+        return render_zsxq_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+
+    # Other richtext HTML targets keep the shared magazine renderer. Zsxq is
+    # intentionally separate because its editor pastes WeChat-style wrappers
+    # poorly and works better with low-style native tags.
     return render_magazine_platform_html(
         platform,
         title,
@@ -1603,8 +1623,10 @@ def render_zsxq_table(table_lines: list[str]) -> str:
     )
     for row in body:
         label = markdown_inline_to_editor_html(row[0]) if row else "项目"
+        label_is_bold = label.startswith("<strong>") and label.endswith("</strong>")
+        label_html = label if label_is_bold else f"<strong>{label}</strong>"
         if compact_budget_table and len(row) >= 2:
-            items.append(f"<li><strong>{label}</strong>：{markdown_inline_to_editor_html(row[1])}</li>")
+            items.append(f"<li>{label_html}：{markdown_inline_to_editor_html(row[1])}</li>")
             continue
         details = []
         for cell_index, cell in enumerate(row[1:], start=1):
@@ -1616,7 +1638,7 @@ def render_zsxq_table(table_lines: list[str]) -> str:
                 + markdown_inline_to_editor_html(cell)
             )
         suffix = "<br>".join(details)
-        items.append(f"<li><strong>{label}</strong><br>{suffix}</li>" if suffix else f"<li><strong>{label}</strong></li>")
+        items.append(f"<li>{label_html}<br>{suffix}</li>" if suffix else f"<li>{label_html}</li>")
     return "<ul>" + "".join(items) + "</ul>"
 
 
@@ -1735,7 +1757,7 @@ def apply_zsxq_spacing(blocks: list[str]) -> list[str]:
         if result and block_type in {"h2", "h3"}:
             push_spacer()
         result.append(block)
-        if block_type in {"quote", "code", "list", "image"}:
+        if block_type in {"paragraph", "quote", "code", "list", "image"}:
             push_spacer()
     if result and result[-1] == ZSXQ_SPACER:
         result.pop()
@@ -1916,13 +1938,20 @@ def render_zsxq_html(
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    return render_magazine_platform_html(
-        "zsxq",
-        title,
-        markdown,
-        image_mode=image_mode,
-        asset_base_dir=asset_base_dir,
-    )
+    body = render_zsxq_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    safe_title = html.escape(title)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title} - 知识星球</title>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
 
 
 def render_wechat_html(
