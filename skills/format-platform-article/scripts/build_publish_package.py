@@ -134,6 +134,7 @@ PLATFORM_PROFILES: dict[str, dict[str, object]] = {
     },
 }
 CALLOUT_MARKERS = {
+    "📖": ("导读", "#fdf6ec", "#c2410c", "#7c2d12"),
     "⚠️": ("注意", "#fdf6ec", "#c2410c", "#7c2d12"),
     "💡": ("提示", "#fdf6ec", "#c2410c", "#7c2d12"),
     "✅": ("完成", "#f4f7f4", "#15803d", "#14532d"),
@@ -165,8 +166,12 @@ CODE_PLACEHOLDER_STYLE = (
     "font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;"
     "font-size:0.92em;line-height:1.35;white-space:nowrap;"
 )
-ZSXQ_SPACER = "<p><br></p>"
 ZSXQ_QUOTE_MARKER = "▍"
+ZSXQ_PARAGRAPH_STYLE = "margin:0 0 1.05em;line-height:1.85;font-size:16px;color:#1f2937;"
+ZSXQ_QUOTE_STYLE = "margin:1.15em 0;line-height:1.85;font-size:16px;color:#111827;"
+ZSXQ_HEADING_STYLE = "margin:2.1em 0 0.85em;line-height:1.42;font-size:1.35em;font-weight:800;color:#111827;"
+ZSXQ_IMAGE_STYLE = "display:block;max-width:100%;height:auto;margin:1.2em auto 0;border-radius:6px;"
+ZSXQ_CAPTION_STYLE = "margin:0.35em 0 1.25em;text-align:center;color:#6b7280;font-size:13px;line-height:1.6;"
 # Image-caption paragraphs look like "*▼ caption*" or "▼ caption" — they sit just below
 # an image and describe it. Detect them so they get pill-style caption styling instead of
 # leaking raw asterisks into the rendered output.
@@ -382,6 +387,19 @@ def detect_raw_html_warnings(markdown: str) -> list[dict[str, object]]:
     return warnings
 
 
+def normalize_notion_quote_callouts(markdown: str) -> str:
+    """Remove Notion's nested quote separator from emoji callout lines.
+
+    Notion often exports callouts as `> 📖 > **导读**：...`. The second `>`
+    is not authored punctuation; if it survives, every platform shows a stray
+    greater-than sign in the lead paragraph. Limit the cleanup to known emoji
+    callout markers so real nested blockquotes remain untouched.
+    """
+    markers = "|".join(re.escape(marker) for marker in CALLOUT_MARKERS)
+    pattern = re.compile(rf"^(\s{{0,3}}>\s*)({markers})\s+>\s+", re.MULTILINE)
+    return pattern.sub(r"\1\2 ", markdown)
+
+
 def markdown_inline_to_html(text: str) -> str:
     escaped = html.escape(text)
     escaped = re.sub(
@@ -465,6 +483,27 @@ def render_editor_image_caption(text: str) -> str:
         f"<em>{html.escape(arrow)} {inner}</em>"
         "</p>"
     )
+
+
+def parse_callout(text: str) -> tuple[str, str, str]:
+    marker = next((item for item in CALLOUT_MARKERS if text.startswith(item)), "")
+    label, _, _, _ = CALLOUT_MARKERS.get(marker, ("提示", "", "", ""))
+    body = text[len(marker) :].strip() if marker else text.strip()
+    body = re.sub(r"^>\s+", "", body)
+    if marker:
+        bold_match = re.match(r"^\*\*\s*([^*\n]+?)\s*\*\*\s*[:：]?\s*", body)
+        if bold_match:
+            custom_label = bold_match.group(1).strip()
+            if custom_label:
+                label = custom_label
+                body = body[bold_match.end():]
+        else:
+            body = re.sub(
+                r"^\*\*\s*" + re.escape(label) + r"\s*\*\*\s*[:：]?\s*",
+                "",
+                body,
+            )
+    return marker, label, body.strip()
 
 
 def extract_outline(markdown: str, limit: int = 6) -> list[str]:
@@ -554,27 +593,8 @@ def render_divider() -> str:
 
 
 def render_callout(text: str) -> str:
-    marker = next((item for item in CALLOUT_MARKERS if text.startswith(item)), "")
-    label, background, border, color = CALLOUT_MARKERS.get(marker, ("提示", "#fdf6ec", "#c2410c", "#7c2d12"))
-    body = text[len(marker) :].strip() if marker else text.strip()
-    # Notion exports callouts as `> <emoji> >  **Label**: body`. After the
-    # outer blockquote marker has been stripped we still see the inner `>`
-    # right after the emoji — strip it so it does not leak into the rendered
-    # body as a literal character.
-    body = re.sub(r"^>\s+", "", body)
-    if marker:
-        bold_match = re.match(r"^\*\*\s*([^*\n]+?)\s*\*\*\s*[:：]?\s*", body)
-        if bold_match:
-            custom_label = bold_match.group(1).strip()
-            if custom_label:
-                label = custom_label
-                body = body[bold_match.end():]
-        else:
-            body = re.sub(
-                r"^\*\*\s*" + re.escape(label) + r"\s*\*\*\s*[:：]?\s*",
-                "",
-                body,
-            )
+    marker, label, body = parse_callout(text)
+    _, background, border, color = CALLOUT_MARKERS.get(marker, ("提示", "#fdf6ec", "#c2410c", "#7c2d12"))
     return (
         f'<section style="margin:30px 0;padding:20px 22px 18px;background:{background};'
         f'border-left:3px solid {border};border-radius:2px 10px 10px 2px;color:{color};'
@@ -1311,9 +1331,7 @@ def render_toutiao_ordered_list(items: list[str], start: int) -> str:
 
 
 def render_toutiao_callout(text: str) -> str:
-    marker = next((item for item in CALLOUT_MARKERS if text.startswith(item)), "")
-    label = CALLOUT_MARKERS.get(marker, ("提示", "", "", ""))[0]
-    body = text[len(marker) :].strip() if marker else text.strip()
+    marker, label, body = parse_callout(text)
     return (
         "<blockquote><p>"
         f"<strong>{html.escape((marker + ' ' + label + '：').strip())}</strong>"
@@ -1400,7 +1418,10 @@ def render_toutiao_blocks(
         if not quote_lines:
             return
         text = " ".join(item.strip() for item in quote_lines).strip()
-        html_lines.append(render_toutiao_quote_paragraph(text))
+        if any(text.startswith(marker) for marker in CALLOUT_MARKERS):
+            html_lines.append(render_toutiao_callout(text))
+        else:
+            html_lines.append(render_toutiao_quote_paragraph(text))
         ordered_number = 0
         quote_lines.clear()
 
@@ -1652,12 +1673,21 @@ def render_zsxq_image_block(
     label = html.escape(image_label(alt_text, index))
     safe_src = html.escape(image_src_for_mode(src, image_mode, asset_base_dir))
     if image_mode == "placeholder":
-        return f"<p><strong>图片占位：</strong>{label}<br>{html.escape(src)}</p>"
-    return f'<p><img src="{safe_src}" alt="{label}"></p>'
+        return f'<p style="{ZSXQ_PARAGRAPH_STYLE}"><strong>图片占位：</strong>{label}<br>{html.escape(src)}</p>'
+    caption = ""
+    if alt_text.strip() and alt_text.strip().lower() != "image" and not is_generated_table_image(src):
+        caption = f'<p style="{ZSXQ_CAPTION_STYLE}"><em>▼ {label}</em></p>'
+    return f'<p style="margin:1.15em 0 0;text-align:center;"><img src="{safe_src}" alt="{label}" style="{ZSXQ_IMAGE_STYLE}"></p>' + caption
 
 
 def render_zsxq_code_block(code: str) -> str:
-    return "<pre><code>" + html.escape(normalize_code_placeholder_text(code)) + "</code></pre>"
+    return (
+        '<pre style="margin:1.15em 0;padding:12px 14px;background:#f8fafc;border:1px solid #e5e7eb;'
+        'border-radius:6px;white-space:pre-wrap;word-break:break-word;line-height:1.7;font-size:13px;">'
+        "<code>"
+        + html.escape(normalize_code_placeholder_text(code))
+        + "</code></pre>"
+    )
 
 
 def render_zsxq_ordered_list(items: list[str], start: int) -> str:
@@ -1665,7 +1695,7 @@ def render_zsxq_ordered_list(items: list[str], start: int) -> str:
     for offset, item in enumerate(items):
         number = start + offset
         paragraphs.append(
-            f"<p><strong>{number}.</strong>&nbsp;"
+            f'<p style="{ZSXQ_PARAGRAPH_STYLE}"><strong>{number}.</strong>&nbsp;'
             + markdown_inline_to_editor_html(item.strip())
             + "</p>"
         )
@@ -1700,11 +1730,9 @@ def has_unclosed_inline_markup(text: str) -> bool:
 
 
 def render_zsxq_callout(text: str) -> str:
-    marker = next((item for item in CALLOUT_MARKERS if text.startswith(item)), "")
-    label = CALLOUT_MARKERS.get(marker, ("提示", "", "", ""))[0]
-    body = text[len(marker) :].strip() if marker else text.strip()
+    marker, label, body = parse_callout(text)
     return (
-        "<p>"
+        f'<p style="{ZSXQ_QUOTE_STYLE}">'
         f"<strong>{ZSXQ_QUOTE_MARKER}{html.escape((marker + ' ' + label + '：').strip())}</strong>"
         f"{markdown_inline_to_editor_html(body)}"
         "</p>"
@@ -1724,44 +1752,7 @@ def should_promote_zsxq_quote(text: str) -> bool:
 
 
 def render_zsxq_quote_paragraph(text: str) -> str:
-    return f"<p><strong>{ZSXQ_QUOTE_MARKER}</strong>&nbsp;" + markdown_inline_to_editor_html(text) + "</p>"
-
-
-def zsxq_block_type(block: str) -> str:
-    if block.startswith("<h2>"):
-        return "h2"
-    if block.startswith("<h3>"):
-        return "h3"
-    if block.startswith("<blockquote>") or block.startswith(f"<p><strong>{ZSXQ_QUOTE_MARKER}"):
-        return "quote"
-    if block.startswith("<pre>"):
-        return "code"
-    if block.startswith("<ul>") or block.startswith("<ol>"):
-        return "list"
-    if re.match(r"^<p><strong>\d+\.</strong>", block):
-        return "list"
-    if '<img src="' in block:
-        return "image"
-    return "paragraph"
-
-
-def apply_zsxq_spacing(blocks: list[str]) -> list[str]:
-    result: list[str] = []
-
-    def push_spacer() -> None:
-        if result and result[-1] != ZSXQ_SPACER:
-            result.append(ZSXQ_SPACER)
-
-    for block in blocks:
-        block_type = zsxq_block_type(block)
-        if result and block_type in {"h2", "h3"}:
-            push_spacer()
-        result.append(block)
-        if block_type in {"paragraph", "quote", "code", "list", "image"}:
-            push_spacer()
-    if result and result[-1] == ZSXQ_SPACER:
-        result.pop()
-    return result
+    return f'<p style="{ZSXQ_QUOTE_STYLE}"><strong>{ZSXQ_QUOTE_MARKER}</strong>&nbsp;' + markdown_inline_to_editor_html(text) + "</p>"
 
 
 def render_zsxq_blocks(
@@ -1793,7 +1784,7 @@ def render_zsxq_blocks(
             html_lines.append(render_zsxq_quote_paragraph(text))
         else:
             for paragraph_text in split_zsxq_paragraph(text):
-                html_lines.append("<p>" + markdown_inline_to_editor_html(paragraph_text) + "</p>")
+                html_lines.append(f'<p style="{ZSXQ_PARAGRAPH_STYLE}">' + markdown_inline_to_editor_html(paragraph_text) + "</p>")
         ordered_number = 0
         paragraph.clear()
 
@@ -1802,7 +1793,10 @@ def render_zsxq_blocks(
         if not quote_lines:
             return
         text = " ".join(item.strip() for item in quote_lines).strip()
-        html_lines.append(render_zsxq_quote_paragraph(text))
+        if any(text.startswith(marker) for marker in CALLOUT_MARKERS):
+            html_lines.append(render_zsxq_callout(text))
+        else:
+            html_lines.append(render_zsxq_quote_paragraph(text))
         ordered_number = 0
         quote_lines.clear()
 
@@ -1816,7 +1810,7 @@ def render_zsxq_blocks(
             ordered_number += len(list_items)
         else:
             items = "".join("<li>" + markdown_inline_to_editor_html(item.strip()) + "</li>" for item in list_items)
-            html_lines.append(f"<ul>{items}</ul>")
+            html_lines.append(f'<ul style="margin:0 0 1.05em 1.2em;padding:0;line-height:1.85;font-size:16px;color:#1f2937;">{items}</ul>')
             ordered_number = 0
         list_items.clear()
 
@@ -1855,7 +1849,7 @@ def render_zsxq_blocks(
             level = len(heading.group(1))
             text = markdown_inline_to_editor_html(heading.group(2).strip())
             tag = "h2" if level <= 2 else "h3"
-            html_lines.append(f"<{tag}>{text}</{tag}>")
+            html_lines.append(f'<{tag} style="{ZSXQ_HEADING_STYLE}">{text}</{tag}>')
             ordered_number = 0
             index += 1
             continue
@@ -1929,7 +1923,7 @@ def render_zsxq_blocks(
     flush_quote()
     if in_code and code_lines:
         html_lines.append(render_zsxq_code_block("\n".join(code_lines)))
-    return "\n".join(apply_zsxq_spacing(html_lines))
+    return "\n".join(html_lines)
 
 
 def render_zsxq_html(
@@ -1947,7 +1941,7 @@ def render_zsxq_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{safe_title} - 知识星球</title>
 </head>
-<body>
+<body style="margin:0;padding:20px 16px;background:#ffffff;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;">
 {body}
 </body>
 </html>
@@ -2436,6 +2430,7 @@ def build_package(
         download_remote=download_remote_images,
         remote_downloader=remote_downloader,
     )
+    normalized = normalize_notion_quote_callouts(normalized)
     warnings.extend(image_warnings)
     warnings.extend(detect_raw_html_warnings(normalized))
 
