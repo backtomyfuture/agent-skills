@@ -1,0 +1,157 @@
+{
+  "source": "/Users/jarod/Documents/agent-skills/skills/format-platform-article/tests/fixtures/article.md",
+  "title": "多平台发布测试文章",
+  "outputs": [
+    "wechat.html",
+    "platforms/toutiao.html",
+    "platforms/zsxq.html",
+    "platforms/smzdm.html",
+    "platforms/zhihu.md",
+    "image-manifest.md"
+  ],
+  "assets": [
+    {
+      "source": "/Users/jarod/Documents/agent-skills/skills/format-platform-article/tests/fixtures/media/sample.png",
+      "output": "assets/sample.png"
+    },
+    {
+      "source": "generated_table",
+      "output": "assets/tables/table_01_核心结论.png"
+    }
+  ],
+  "image_manifest": [
+    {
+      "index": 1,
+      "label": "本地图片",
+      "src": "assets/sample.png"
+    },
+    {
+      "index": 2,
+      "label": "核心结论",
+      "src": "assets/tables/table_01_核心结论.png"
+    },
+    {
+      "index": 3,
+      "label": "远程图片",
+      "src": "https://example.com/remote.png"
+    }
+  ],
+  "platforms": {
+    "zhihu": {
+      "label": "知乎",
+      "recommended": "platforms/zhihu.md",
+      "fallback": "assets/ + image-manifest.md",
+      "html_image_mode": "markdown",
+      "editor_model": "知乎写文章编辑器支持导入/粘贴 Markdown。md2zhihu 生成的单文件 Markdown 把图片托管到 Git 图床、公式转知乎原生公式图、表格转 HTML，可一键导入。",
+      "image_strategy": "由 md2zhihu 把本地图片推送到 Git 图床（gitee/github）并改写成 HTTPS 原始链接，无需知乎 Cookie。若未配置 --zhihu-asset-repo 或未安装 md2zhihu，则回退为带本地 ../assets/ 链接的 zhihu.md，并按 image-manifest.md 手工补图。",
+      "code_strategy": "md2zhihu 保留原生代码块（可选转为图片）；公式 $...$/$$...$$ 转成知乎公式图，mermaid/graphviz 代码块转为图片。",
+      "notes": [
+        "标题在知乎文章标题框单独填写；zhihu.md 只负责正文，不带 H1、包装头或平台说明文字。",
+        "知乎正文通过“导入文档/粘贴 Markdown”载入 platforms/zhihu.md。",
+        "图片走 Git 图床：需要一个有写权限的公共仓库（gitee/github）并通过 SSH key 或带令牌的 https 仓库地址配置 --zhihu-asset-repo。",
+        "md2zhihu 依赖 pandoc/imagemagick/node/mermaid-cli，且不支持 Windows。",
+        "LaTeX 公式、mermaid、graphviz 会自动转成知乎可显示的图片。"
+      ],
+      "sources": [
+        {
+          "label": "md2zhihu（markdown 转知乎兼容格式）",
+          "url": "https://github.com/drmingdrmer/md2zhihu"
+        },
+        {
+          "label": "md2zhihu 中文说明",
+          "url": "https://github.com/drmingdrmer/md2zhihu/blob/main/README-cn.md"
+        }
+      ]
+    },
+    "toutiao": {
+      "label": "今日头条",
+      "recommended": "platforms/toutiao.html",
+      "fallback": "assets/ + image-manifest.md",
+      "html_image_mode": "data",
+      "editor_model": "头条号图文富文本编辑器，电脑端入口为“主页 - 创作 - 图文”。",
+      "image_strategy": "复制 toutiao.html 的富文本结构，图片已用 Base64 内嵌；若平台拒绝内嵌图片，再按 image-manifest.md 从 assets/ 兜底上传。",
+      "code_strategy": "代码块保留为原生 pre/code，不加外层样式和语言标签，避免头条编辑器清洗后把配置压成一行。",
+      "notes": [
+        "标题在头条号图文编辑器的标题框单独填写；toutiao.html 只负责正文，不带 H1、包装头或平台说明文字。",
+        "平台支持图文发布、文章链接和扩展链接，但外链/内链建议发布前在编辑器里单独复核。",
+        "减少复杂表格和深层样式；头条支持原生引用，重点段落保留为 blockquote；预算类小表格转成清单，长配置优先保留代码块而不是压成一行。"
+      ],
+      "sources": [
+        {
+          "label": "头条创作者帮助中心 - 图文创作",
+          "url": "https://baike.toutiao.com/detail/211/212/214"
+        }
+      ]
+    },
+    "zsxq": {
+      "label": "知识星球",
+      "recommended": "platforms/zsxq.html",
+      "fallback": "assets/ + image-manifest.md",
+      "html_image_mode": "data",
+      "editor_model": "网页端长文章，官方说明支持 100000 字符、图文混排、超链接和一些 Markdown 语法。",
+      "image_strategy": "复制 zsxq.html 的富文本结构，图片已用 Base64 内嵌；若平台拒绝内嵌图片，再按 image-manifest.md 从 assets/ 兜底上传。",
+      "code_strategy": "代码块转为浅色 pre/code 富文本，避免 Markdown 粘贴后观感过于朴素。",
+      "notes": [
+        "长文走网页版“长文章”，不要用 App 主题流承载长教程。",
+        "优先用 zsxq.html 获得更好的段落、标题、视觉引用和代码块观感；如果图片被清洗，再按 image-manifest.md 从 assets/ 手工补传。",
+        "如果链接被吞或样式异常，改用完整裸链接或编辑器内插入超链接。"
+      ],
+      "sources": [
+        {
+          "label": "知识星球常见问题 - 发布长文章",
+          "url": "https://doc.zsxq.com/faq/faqs.html"
+        }
+      ]
+    },
+    "smzdm": {
+      "label": "什么值得买",
+      "recommended": "platforms/smzdm.html",
+      "fallback": "assets/ + image-manifest.md",
+      "html_image_mode": "data",
+      "editor_model": "原创投稿富文本编辑器，强调头图、H2/H3、商品/文章卡片、引用、链接和图片。",
+      "image_strategy": "复制 smzdm.html 的富文本结构，图片已用 Base64 内嵌；若平台拒绝内嵌图片，再按 image-manifest.md 从 assets/ 兜底上传。商品链接发布前改成编辑器内“插入卡片”。",
+      "code_strategy": "保留代码块，但什么值得买不偏代码阅读，复杂配置前后加解释，避免整篇像文档。",
+      "notes": [
+        "H2/H3 只用于真正层级，不要当加粗使用；商品购买链接必须优先改成卡片。",
+        "评测/晒物类内容至少准备清晰头图和多张正文图，发布前补分类、标签和商品链接。"
+      ],
+      "sources": [
+        {
+          "label": "什么值得买文章投稿规范",
+          "url": "https://post.smzdm.com/about"
+        },
+        {
+          "label": "什么值得买官方账号投稿指引",
+          "url": "https://www.toutiao.com/zixun/7543077851290601518/"
+        }
+      ]
+    }
+  },
+  "zhihu": {
+    "engine": "md2zhihu",
+    "output": "platforms/zhihu.md",
+    "asset_repo": "https://github.com/backtomyfuture/images.git",
+    "hosted": true
+  },
+  "tables": {
+    "converted": 1,
+    "kept": 0,
+    "mode": "auto"
+  },
+  "warnings": [
+    {
+      "code": "remote_image_download_failed",
+      "message": "Failed to download remote image; leaving URL in place.",
+      "target": "https://example.com/remote.png"
+    }
+  ],
+  "next_steps": [
+    "Open wechat.html in your browser to preview; copy/paste it into the WeChat Official Account editor.",
+    "For Toutiao/Zsxq/SMZDM, open platforms/<name>.html and paste into that platform's article editor (title is entered separately).",
+    "For Zhihu, import platforms/zhihu.md via the Zhihu editor's '导入文档/粘贴 Markdown'; md2zhihu hosts images on the configured --zhihu-asset-repo git repo.",
+    "If md2zhihu is unavailable or no --zhihu-asset-repo was set, zhihu.md uses local ../assets/ links; upload images in order using image-manifest.md.",
+    "If another platform drops embedded images after paste, use image-manifest.md to upload or drag images from assets/ in the original order.",
+    "Some remote images failed to download (e.g. expired Notion S3 presigned URLs). Refresh the source export, save the images into the same folder as your Markdown, and re-run the build.",
+    "Review report.json warnings before publishing."
+  ]
+}

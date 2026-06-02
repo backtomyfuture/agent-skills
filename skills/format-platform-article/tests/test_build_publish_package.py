@@ -534,10 +534,9 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("本文路线", rendered)
 
     def test_render_zsxq_html_can_embed_local_images_as_data_uri(self):
-        # Zsxq (and the other three richtext platforms) now share the WeChat
-        # magazine renderer, so callouts render as a labeled badge instead of
-        # the legacy ▍-prefixed paragraph, and tables keep their styled
-        # markup instead of being collapsed into <ul>.
+        # Zsxq's editor does not preserve the WeChat magazine wrapper well.
+        # Keep this output body-only and low-style so pasted long articles do
+        # not inherit the WeChat background/card treatment.
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         rendered = build_publish_package.render_platform_html(
             "zsxq",
@@ -550,30 +549,28 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("先说价值", rendered)
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("阅读方式", rendered)
-        self.assertIn("<article", rendered)
-        self.assertIn("<h2 style=", rendered)
-        self.assertIn("小节</h2>", rendered)
-        # ⚠️ callout renders as a labeled badge (warm cream background, orange
-        # left rule) — not the old ▍-prefixed plain paragraph.
-        self.assertIn("background:#fdf6ec", rendered)
-        self.assertIn("border-left:3px solid #c2410c", rendered)
-        self.assertIn("注意这件事", rendered)
-        # Tables stay as styled HTML tables for visual consistency with WeChat.
-        self.assertIn("<table", rendered)
+        self.assertIn("<title>标题 - 知识星球</title>", rendered)
+        self.assertIn("<body>\n<h2>小节</h2>", rendered)
+        self.assertIn("<p><strong>▍⚠️ 注意：</strong>注意这件事。</p>", rendered)
+        self.assertIn("<ul>", rendered)
         self.assertIn("连接失败", rendered)
         self.assertIn("检查端口", rendered)
-        self.assertIn("<pre", rendered)
+        self.assertIn("<pre><code>", rendered)
         self.assertIn("【服务器IP】", rendered)
         self.assertIn('src="data:image/png;base64,', rendered)
         self.assertIn("<img", rendered)
         self.assertNotIn("图片占位 1", rendered)
         self.assertNotIn("media/sample.png", rendered)
         self.assertNotIn("知识星球 粘贴版", rendered)
+        self.assertNotIn("<article", rendered)
+        self.assertNotIn("<h2 style=", rendered)
+        self.assertNotIn("background:#f7f3ec", rendered)
+        self.assertNotIn("border-left:3px solid #c2410c", rendered)
+        self.assertNotIn("<table", rendered)
 
     def test_render_zsxq_ordered_steps_keep_numbering_across_images(self):
-        # The magazine renderer keeps a contiguous list numbering when an
-        # image is embedded between two `1.` items so readers see 1/2/3/4
-        # instead of 1/1/1/1.
+        # Zsxq uses plain paragraph numbering; keep numbering contiguous when
+        # an image is embedded between repeated Markdown `1.` items.
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         rendered = build_publish_package.render_platform_html(
             "zsxq",
@@ -583,11 +580,12 @@ class BuildPublishPackageTests(unittest.TestCase):
             asset_base_dir=fixture_dir,
         )
 
-        self.assertIn("01.</span>第一步", rendered)
-        self.assertIn("02.</span>第二步", rendered)
-        self.assertIn("03.</span>第三步", rendered)
-        self.assertIn("04.</span>第四步", rendered)
+        self.assertIn("<p><strong>1.</strong>&nbsp;第一步</p>", rendered)
+        self.assertIn("<p><strong>2.</strong>&nbsp;第二步</p>", rendered)
+        self.assertIn("<p><strong>3.</strong>&nbsp;第三步</p>", rendered)
+        self.assertIn("<p><strong>4.</strong>&nbsp;第四步</p>", rendered)
         self.assertIn('src="data:image/png;base64,', rendered)
+        self.assertNotIn("01.</span>", rendered)
 
     def test_render_zsxq_gcp_vless_does_not_inject_lead(self):
         rendered = build_publish_package.render_platform_html(
@@ -598,18 +596,16 @@ class BuildPublishPackageTests(unittest.TestCase):
         )
 
         self.assertIn("今天使用 Google One 赠送的 GCP 余额搭建 VLESS Reality。", rendered)
-        self.assertIn("<h2 style=", rendered)
-        self.assertIn("Step 1</h2>", rendered)
+        self.assertIn("<h2>Step 1</h2>", rendered)
+        self.assertNotIn("<h2 style=", rendered)
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("不用域名、不用证书", rendered)
         self.assertNotIn("预算提醒", rendered)
         self.assertNotIn("先说价值", rendered)
 
-    def test_render_zsxq_renders_high_value_paragraphs_with_magazine_emphasis(self):
-        # The magazine renderer keeps bold runs as inline accents (yellow
-        # underline) rather than promoting them to ▍-prefixed pull quotes;
-        # readers still get the visual lift, without losing the paragraph
-        # flow around the bold phrase.
+    def test_render_zsxq_promotes_high_value_paragraphs_to_visual_quotes(self):
+        # The Zsxq renderer uses a text-safe ▍ marker for high-value
+        # paragraphs because pasted inline CSS is unreliable in its editor.
         rendered = build_publish_package.render_platform_html(
             "zsxq",
             "标题",
@@ -621,13 +617,57 @@ class BuildPublishPackageTests(unittest.TestCase):
             image_mode="data",
         )
 
-        self.assertIn("整个流程：", rendered)
-        self.assertIn("创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通", rendered)
-        self.assertIn("把这整段链接复制保存到本地", rendered)
-        self.assertIn("不支持直接导入", rendered)
+        self.assertIn("<p><strong>▍</strong>&nbsp;整个流程：<strong>创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通</strong>。</p>", rendered)
+        self.assertIn("<p><strong>▍</strong>&nbsp;<strong>把这整段链接复制保存到本地</strong>。这就是你的客户端配置，不要发到任何公开平台。</p>", rendered)
+        self.assertIn("<p><strong>▍</strong>&nbsp;Clash Verge Rev <strong>不支持直接导入</strong> <code>vless://</code> <strong>链接</strong>，需要手动新建一个本地 YAML 配置文件。</p>", rendered)
+        self.assertIn("<p><strong>▍</strong>&nbsp;不用时停止实例；确定不用了，删除 VM、磁盘、静态 IP 和项目，别留闲置资源。</p>", rendered)
         self.assertIn("普通操作说明继续用正文。", rendered)
-        self.assertNotIn("▍", rendered)
-        self.assertIn("color:#1a1a1a;font-weight:700", rendered)
+        self.assertNotIn("color:#1a1a1a;font-weight:700", rendered)
+
+    def test_render_zsxq_keeps_ai_article_out_of_wechat_magazine_layout(self):
+        markdown = (
+            "> 📖 > **导读**｜这一年，要说什么在悄悄改变我们每个人的工作方式，答案多半都指向 **AI**。\n\n"
+            "## 01｜每个时代，都有一种「奇迹材料」\n\n"
+            "文章一上来，就把视角拉得很高。\n\n"
+            "---\n\n"
+            "| **层面** | **旧世界（人力）** | **新世界（无限心智）** |\n"
+            "| --- | --- | --- |\n"
+            "| **个体** | 人当「胶水」 | 一个人同时指挥三四个 agent |\n"
+        )
+
+        rendered = build_publish_package.render_platform_html("zsxq", "AI", markdown, image_mode="data")
+
+        self.assertIn("<title>AI - 知识星球</title>", rendered)
+        self.assertIn("<p><strong>▍</strong>&nbsp;📖 &gt; <strong>导读</strong>｜", rendered)
+        self.assertIn("<h2>01｜每个时代，都有一种「奇迹材料」</h2>", rendered)
+        self.assertIn("<p>文章一上来，就把视角拉得很高。</p>", rendered)
+        self.assertIn("<ul><li><strong>个体</strong><br>", rendered)
+        self.assertNotIn("<strong><strong>个体</strong></strong>", rendered)
+        self.assertNotIn("<article", rendered)
+        self.assertNotIn("<h2 style=", rendered)
+        self.assertNotIn("background:#f7f3ec", rendered)
+        self.assertNotIn("border-bottom:2px solid #fcd34d", rendered)
+
+    def test_render_zsxq_inserts_visible_spacers_between_dense_paragraphs(self):
+        rendered = build_publish_package.render_platform_html(
+            "zsxq",
+            "标题",
+            "读完这篇，我脑子里挥之不去的，是 Ivan 那个最朴素、也最锋利的判断——\n\n"
+            "**AI 不是一个功能，而是一种材料。**\n\n"
+            "这二者的差别，很大。功能，是加在旧东西上的；材料，是用来重新造一个世界的。\n\n"
+            "想透了这一层，我对 AI 的态度，就只剩两个字—— **All in。**",
+            image_mode="data",
+        )
+
+        self.assertIn(
+            "<p>读完这篇，我脑子里挥之不去的，是 Ivan 那个最朴素、也最锋利的判断——</p>\n"
+            "<p><br></p>\n"
+            "<p><strong>AI 不是一个功能，而是一种材料。</strong></p>\n"
+            "<p><br></p>\n"
+            "<p>这二者的差别，很大。",
+            rendered,
+        )
+        self.assertGreaterEqual(rendered.count("<p><br></p>"), 3)
 
     def test_render_zsxq_quote_lab_contains_native_quote_experiments(self):
         rendered = build_publish_package.render_zsxq_quote_lab("标题")
@@ -990,9 +1030,13 @@ class BuildPublishPackageTests(unittest.TestCase):
 
             zsxq_html = (output / "platforms" / "zsxq.html").read_text(encoding="utf-8")
             self.assertIn("data:image/png;base64,", zsxq_html)
-            self.assertIn("<article", zsxq_html)
-            self.assertIn("知识星球长文粘贴版", zsxq_html)
-            self.assertNotIn("▍", zsxq_html)
+            self.assertIn("<title>多平台发布测试文章 - 知识星球</title>", zsxq_html)
+            self.assertIn("<body>\n<p>", zsxq_html)
+            self.assertIn("<h2>核心结论</h2>", zsxq_html)
+            self.assertIn("<p><strong>▍</strong>&nbsp;好的发布包应该先保证结构稳定，再考虑自动发布。</p>", zsxq_html)
+            self.assertNotIn("<article", zsxq_html)
+            self.assertNotIn("知识星球长文粘贴版", zsxq_html)
+            self.assertNotIn("<h2 style=", zsxq_html)
 
             self.assertTrue(any(item["code"] == "remote_image" for item in report["warnings"]))
 
