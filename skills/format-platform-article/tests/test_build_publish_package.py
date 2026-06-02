@@ -550,20 +550,23 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("阅读方式", rendered)
         self.assertIn("<title>标题 - 知识星球</title>", rendered)
-        self.assertIn("<body>\n<h2>小节</h2>", rendered)
-        self.assertIn("<p><strong>▍⚠️ 注意：</strong>注意这件事。</p>", rendered)
+        self.assertIn("<body style=", rendered)
+        self.assertIn('<h2 style="', rendered)
+        self.assertIn(">小节</h2>", rendered)
+        self.assertIn("<strong>▍⚠️ 注意：</strong>注意这件事。</p>", rendered)
         self.assertIn("<ul>", rendered)
         self.assertIn("连接失败", rendered)
         self.assertIn("检查端口", rendered)
-        self.assertIn("<pre><code>", rendered)
+        self.assertIn("<pre style=", rendered)
+        self.assertIn("<code>", rendered)
         self.assertIn("【服务器IP】", rendered)
         self.assertIn('src="data:image/png;base64,', rendered)
+        self.assertIn("max-width:100%;height:auto", rendered)
         self.assertIn("<img", rendered)
         self.assertNotIn("图片占位 1", rendered)
         self.assertNotIn("media/sample.png", rendered)
         self.assertNotIn("知识星球 粘贴版", rendered)
         self.assertNotIn("<article", rendered)
-        self.assertNotIn("<h2 style=", rendered)
         self.assertNotIn("background:#f7f3ec", rendered)
         self.assertNotIn("border-left:3px solid #c2410c", rendered)
         self.assertNotIn("<table", rendered)
@@ -580,11 +583,12 @@ class BuildPublishPackageTests(unittest.TestCase):
             asset_base_dir=fixture_dir,
         )
 
-        self.assertIn("<p><strong>1.</strong>&nbsp;第一步</p>", rendered)
-        self.assertIn("<p><strong>2.</strong>&nbsp;第二步</p>", rendered)
-        self.assertIn("<p><strong>3.</strong>&nbsp;第三步</p>", rendered)
-        self.assertIn("<p><strong>4.</strong>&nbsp;第四步</p>", rendered)
+        self.assertIn("<strong>1.</strong>&nbsp;第一步</p>", rendered)
+        self.assertIn("<strong>2.</strong>&nbsp;第二步</p>", rendered)
+        self.assertIn("<strong>3.</strong>&nbsp;第三步</p>", rendered)
+        self.assertIn("<strong>4.</strong>&nbsp;第四步</p>", rendered)
         self.assertIn('src="data:image/png;base64,', rendered)
+        self.assertIn("max-width:100%;height:auto", rendered)
         self.assertNotIn("01.</span>", rendered)
 
     def test_render_zsxq_gcp_vless_does_not_inject_lead(self):
@@ -596,8 +600,8 @@ class BuildPublishPackageTests(unittest.TestCase):
         )
 
         self.assertIn("今天使用 Google One 赠送的 GCP 余额搭建 VLESS Reality。", rendered)
-        self.assertIn("<h2>Step 1</h2>", rendered)
-        self.assertNotIn("<h2 style=", rendered)
+        self.assertIn(">Step 1</h2>", rendered)
+        self.assertIn("<h2 style=", rendered)
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("不用域名、不用证书", rendered)
         self.assertNotIn("预算提醒", rendered)
@@ -617,10 +621,10 @@ class BuildPublishPackageTests(unittest.TestCase):
             image_mode="data",
         )
 
-        self.assertIn("<p><strong>▍</strong>&nbsp;整个流程：<strong>创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通</strong>。</p>", rendered)
-        self.assertIn("<p><strong>▍</strong>&nbsp;<strong>把这整段链接复制保存到本地</strong>。这就是你的客户端配置，不要发到任何公开平台。</p>", rendered)
-        self.assertIn("<p><strong>▍</strong>&nbsp;Clash Verge Rev <strong>不支持直接导入</strong> <code>vless://</code> <strong>链接</strong>，需要手动新建一个本地 YAML 配置文件。</p>", rendered)
-        self.assertIn("<p><strong>▍</strong>&nbsp;不用时停止实例；确定不用了，删除 VM、磁盘、静态 IP 和项目，别留闲置资源。</p>", rendered)
+        self.assertIn("<strong>▍</strong>&nbsp;整个流程：<strong>创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通</strong>。</p>", rendered)
+        self.assertIn("<strong>▍</strong>&nbsp;<strong>把这整段链接复制保存到本地</strong>。这就是你的客户端配置，不要发到任何公开平台。</p>", rendered)
+        self.assertIn("<strong>▍</strong>&nbsp;Clash Verge Rev <strong>不支持直接导入</strong> <code>vless://</code> <strong>链接</strong>，需要手动新建一个本地 YAML 配置文件。</p>", rendered)
+        self.assertIn("<strong>▍</strong>&nbsp;不用时停止实例；确定不用了，删除 VM、磁盘、静态 IP 和项目，别留闲置资源。</p>", rendered)
         self.assertIn("普通操作说明继续用正文。", rendered)
         self.assertNotIn("color:#1a1a1a;font-weight:700", rendered)
 
@@ -638,17 +642,17 @@ class BuildPublishPackageTests(unittest.TestCase):
         rendered = build_publish_package.render_platform_html("zsxq", "AI", markdown, image_mode="data")
 
         self.assertIn("<title>AI - 知识星球</title>", rendered)
-        self.assertIn("<p><strong>▍</strong>&nbsp;📖 &gt; <strong>导读</strong>｜", rendered)
-        self.assertIn("<h2>01｜每个时代，都有一种「奇迹材料」</h2>", rendered)
-        self.assertIn("<p>文章一上来，就把视角拉得很高。</p>", rendered)
+        self.assertIn("<strong>▍📖 导读：</strong>｜这一年", rendered)
+        self.assertNotIn("📖 &gt;", rendered)
+        self.assertIn(">01｜每个时代，都有一种「奇迹材料」</h2>", rendered)
+        self.assertIn(">文章一上来，就把视角拉得很高。</p>", rendered)
         self.assertIn("<ul><li><strong>个体</strong><br>", rendered)
         self.assertNotIn("<strong><strong>个体</strong></strong>", rendered)
         self.assertNotIn("<article", rendered)
-        self.assertNotIn("<h2 style=", rendered)
         self.assertNotIn("background:#f7f3ec", rendered)
         self.assertNotIn("border-bottom:2px solid #fcd34d", rendered)
 
-    def test_render_zsxq_inserts_visible_spacers_between_dense_paragraphs(self):
+    def test_render_zsxq_uses_margins_instead_of_empty_spacer_paragraphs(self):
         rendered = build_publish_package.render_platform_html(
             "zsxq",
             "标题",
@@ -659,15 +663,11 @@ class BuildPublishPackageTests(unittest.TestCase):
             image_mode="data",
         )
 
-        self.assertIn(
-            "<p>读完这篇，我脑子里挥之不去的，是 Ivan 那个最朴素、也最锋利的判断——</p>\n"
-            "<p><br></p>\n"
-            "<p><strong>AI 不是一个功能，而是一种材料。</strong></p>\n"
-            "<p><br></p>\n"
-            "<p>这二者的差别，很大。",
-            rendered,
-        )
-        self.assertGreaterEqual(rendered.count("<p><br></p>"), 3)
+        self.assertIn(">读完这篇，我脑子里挥之不去的，是 Ivan 那个最朴素、也最锋利的判断——</p>", rendered)
+        self.assertIn("><strong>AI 不是一个功能，而是一种材料。</strong></p>", rendered)
+        self.assertIn(">这二者的差别，很大。", rendered)
+        self.assertIn("margin:0 0 1.05em;line-height:1.85", rendered)
+        self.assertNotIn("<p><br></p>", rendered)
 
     def test_render_zsxq_quote_lab_contains_native_quote_experiments(self):
         rendered = build_publish_package.render_zsxq_quote_lab("标题")
@@ -1031,12 +1031,13 @@ class BuildPublishPackageTests(unittest.TestCase):
             zsxq_html = (output / "platforms" / "zsxq.html").read_text(encoding="utf-8")
             self.assertIn("data:image/png;base64,", zsxq_html)
             self.assertIn("<title>多平台发布测试文章 - 知识星球</title>", zsxq_html)
-            self.assertIn("<body>\n<p>", zsxq_html)
-            self.assertIn("<h2>核心结论</h2>", zsxq_html)
-            self.assertIn("<p><strong>▍</strong>&nbsp;好的发布包应该先保证结构稳定，再考虑自动发布。</p>", zsxq_html)
+            self.assertIn("<body style=", zsxq_html)
+            self.assertIn(">核心结论</h2>", zsxq_html)
+            self.assertIn("<strong>▍</strong>&nbsp;好的发布包应该先保证结构稳定，再考虑自动发布。</p>", zsxq_html)
+            self.assertIn("max-width:100%;height:auto", zsxq_html)
+            self.assertNotIn("<p><br></p>", zsxq_html)
             self.assertNotIn("<article", zsxq_html)
             self.assertNotIn("知识星球长文粘贴版", zsxq_html)
-            self.assertNotIn("<h2 style=", zsxq_html)
 
             self.assertTrue(any(item["code"] == "remote_image" for item in report["warnings"]))
 
