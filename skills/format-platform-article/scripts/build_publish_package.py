@@ -869,6 +869,21 @@ def image_src_for_mode(src: str, image_mode: str, asset_base_dir: Path | None = 
     return f"data:{mime_type};base64,{encoded}"
 
 
+def embed_markdown_images_as_data_uri(markdown: str, asset_base_dir: Path) -> str:
+    """Rewrite local Markdown image refs (`![](../assets/x.png)`) to self-contained
+    `data:` URIs. Zsxq's Markdown-mode editor accepts a data-URI image from a plain
+    text paste, so embedding lets a single paste carry both text and images into the
+    draft (avoiding a separate per-image binary paste). Remote/`data:` srcs and any
+    file that cannot be read are left untouched."""
+    def repl(match: re.Match[str]) -> str:
+        alt, raw_src = match.group(1), match.group(2)
+        src = clean_image_target(raw_src)
+        data = image_src_for_mode(src, "data", asset_base_dir)
+        return match.group(0) if data == src else f"![{alt}]({data})"
+
+    return IMAGE_RE.sub(repl, markdown)
+
+
 def render_image_block(
     alt_text: str,
     src: str,
@@ -2651,6 +2666,7 @@ def build_package(
     download_remote_images: bool = True,
     remote_downloader: Optional[Callable[[str, Path, int], Optional[Path]]] = None,
     normalize_punctuation: bool = True,
+    zsxq_embed_images: bool = False,
 ) -> dict[str, object]:
     source = Path(source_path).resolve()
     output = Path(output_dir).resolve()
@@ -2746,6 +2762,12 @@ def build_package(
     # which Milkdown can't render) and rewrite asset paths for the platforms/
     # subdir. Paste it in the editor's Markdown mode (or via publish-zsxq-article).
     zsxq_md = rewrite_asset_paths_for_platforms(zhihu_source_markdown)
+    if zsxq_embed_images:
+        # One-paste convenience: inline images as data: URIs so the Markdown
+        # paste alone carries them. Whether they survive *publish* (vs binary
+        # paste → CDN upload, which publish-zsxq-article uses) is platform
+        # behaviour the user should confirm once before relying on it.
+        zsxq_md = embed_markdown_images_as_data_uri(zsxq_md, output / "platforms")
     if not zsxq_md.endswith("\n"):
         zsxq_md += "\n"
     write_text(output / "platforms" / "zsxq.md", zsxq_md)
@@ -2886,6 +2908,14 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Which output to open after build (default: zhihu opens platforms/zhihu.md for import).",
     )
     parser.add_argument(
+        "--zsxq-embed-images",
+        dest="zsxq_embed_images",
+        action="store_true",
+        help="Inline images in platforms/zsxq.md as data: URIs so a single Markdown "
+        "paste carries them into Zsxq's Markdown-mode draft. Confirm publish survival "
+        "before relying on it; otherwise paste images via binary paste / publish-zsxq-article.",
+    )
+    parser.add_argument(
         "--no-punct-normalize",
         dest="normalize_punctuation",
         action="store_false",
@@ -2914,6 +2944,7 @@ def main(argv: list[str] | None = None) -> int:
             open_target=args.open_target,
             download_remote_images=not args.no_download_remote_images,
             normalize_punctuation=args.normalize_punctuation,
+            zsxq_embed_images=args.zsxq_embed_images,
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
