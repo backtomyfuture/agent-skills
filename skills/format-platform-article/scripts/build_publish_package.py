@@ -491,7 +491,7 @@ def markdown_inline_to_html(text: str) -> str:
     )
     escaped = re.sub(
         r"\*\*([^*]+)\*\*",
-        r'<span style="color:#1a1a1a;font-weight:700;border-bottom:2px solid #fcd34d;padding-bottom:1px;">\1</span>',
+        r'<span style="color:#1a1a1a;font-weight:700;">\1</span>',
         escaped,
     )
     # Italic: single * not adjacent to other * or word chars (avoids tripping on **bold** leftovers).

@@ -395,12 +395,12 @@ class BuildPublishPackageTests(unittest.TestCase):
 
     def test_inline_bold_still_works_alongside_italic(self):
         # The italic regex must not accidentally swallow ** bold ** markers.
-        # Bold uses the editorial "highlighter" marker (bold + amber underline)
-        # so we assert the structural pieces rather than an exact style string.
+        # Bold is weight + deep near-black only (no amber underline) so a
+        # bold-heavy article does not turn into a wall of underlines.
         rendered = build_publish_package.render_wechat_html("标题", "**重要** 和 *次要*")
 
         self.assertIn("font-weight:700", rendered)
-        self.assertIn("border-bottom:2px solid #fcd34d", rendered)
+        self.assertNotIn("border-bottom:2px solid #fcd34d", rendered)
         self.assertIn(">重要</span>", rendered)
         self.assertIn(">次要</em>", rendered)
 
@@ -806,8 +806,7 @@ class BuildPublishPackageTests(unittest.TestCase):
         # The bold label keeps the colon glued to "核心" so it cannot wrap onto
         # a new line and an &nbsp; separates the label cluster from the body.
         self.assertIn(
-            '<span style="color:#1a1a1a;font-weight:700;'
-            'border-bottom:2px solid #fcd34d;padding-bottom:1px;">核心：</span>'
+            '<span style="color:#1a1a1a;font-weight:700;">核心：</span>'
             '&nbsp;选择 Xray-core',
             rendered,
         )
