@@ -206,10 +206,13 @@ class BuildPublishPackageTests(unittest.TestCase):
             "> ⚠️  **注意** ：这个价格可能是限时机制，建议先试试，抓紧窗口期。",
         )
 
-        # Badge style of render_callout — orange small caps label.
+        # Badge style of render_callout — a readable bold terracotta title, not
+        # a tiny letter-spaced uppercase eyebrow (uppercase is meaningless for
+        # Chinese and wide tracking makes it look sparse).
         self.assertIn("background:#fdf6ec", rendered)
         self.assertIn("border-left:3px solid #c2410c", rendered)
-        self.assertIn("letter-spacing:2px;text-transform:uppercase", rendered)
+        self.assertNotIn("text-transform:uppercase", rendered)
+        self.assertIn("font-size:16px;font-weight:700", rendered)
         self.assertIn("注意", rendered)
         # Body keeps the content but drops the redundant **注意** ： prefix.
         self.assertIn("这个价格可能是限时机制", rendered)
@@ -284,16 +287,20 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertIn("background:#fdf6ec", wechat)
         self.assertIn("▍", zsxq)
 
-    def test_blockquote_without_callout_marker_keeps_literary_quote(self):
-        # Plain blockquote (no warning marker) should still render with the
-        # editorial curly-quote treatment — this is a deliberate accent for
-        # actual quotations and must not be regressed by the callout fix.
+    def test_blockquote_without_callout_marker_renders_clean_quote_card(self):
+        # Plain blockquote (no warning marker) renders as a warm cream card with
+        # a terracotta left rule and italic body. The big serif “/” glyphs were
+        # removed on purpose — readers found them distracting and the left rule +
+        # italic already read as a quotation.
         rendered = build_publish_package.render_wechat_html(
             "标题",
             "> 把记忆当成资产，而不是日志。",
         )
 
-        self.assertIn("&ldquo;", rendered)
+        self.assertNotIn("&ldquo;", rendered)
+        self.assertNotIn("&rdquo;", rendered)
+        self.assertIn("background:#fdf6ec", rendered)
+        self.assertIn("border-left:3px solid #c2410c", rendered)
         self.assertIn("font-style:italic", rendered)
         self.assertIn("把记忆当成资产", rendered)
 
@@ -528,34 +535,33 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertIn("server: ", rendered)
         self.assertNotIn("[SERVER-IP]", rendered)
 
-    def test_render_platform_html_uses_unified_magazine_layout(self):
-        # All four richtext platforms share the WeChat magazine renderer so
-        # every visual fix (callout badges, code blocks, table styling, etc.)
-        # lands in one place.
+    def test_render_platform_html_uses_native_layout(self):
+        # Toutiao / SMZDM use conservative native markup (their editors strip the
+        # magazine's decorative CSS). Headings are bare <h2>, quotes are native
+        # <blockquote>, and placeholder image mode never inlines base64.
         rendered = build_publish_package.render_platform_html(
-            "zhihu",
+            "toutiao",
             "标题",
             "## 小节\n\n> 引用\n\n```text\nvless://【UUID】@【你的服务器IP】:443#【备注】\n```\n\n![图](../assets/a.png)",
             image_mode="placeholder",
         )
 
-        self.assertIn("<title>标题 - 知乎正文粘贴版</title>", rendered)
-        self.assertIn("<article", rendered)
-        self.assertIn("<h2 style=", rendered)
-        self.assertIn("小节</h2>", rendered)
-        self.assertIn("引用", rendered)
+        self.assertIn("<title>标题 - 今日头条正文粘贴版</title>", rendered)
+        self.assertNotIn("<article", rendered)
+        self.assertNotIn("<h2 style=", rendered)
+        self.assertNotIn("<section", rendered)
+        self.assertIn("<h2>小节</h2>", rendered)
+        self.assertIn("<blockquote><p>引用</p></blockquote>", rendered)
         self.assertIn("<pre", rendered)
         self.assertIn("<code", rendered)
         self.assertIn("【UUID】", rendered)
         self.assertIn("【服务器IP】", rendered)
         self.assertIn("图片占位 1", rendered)
         self.assertIn("../assets/a.png", rendered)
-        # Zhihu still must not inline base64 images (its editor rejects them).
         self.assertNotIn("data:image/", rendered)
         self.assertNotIn("先说价值", rendered)
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("阅读方式", rendered)
-        self.assertNotIn("知乎 粘贴版", rendered)
         self.assertNotIn("本文路线", rendered)
 
     def test_render_zsxq_html_can_embed_local_images_as_data_uri(self):
@@ -732,16 +738,22 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("先说结论", rendered)
         self.assertNotIn("先说价值", rendered)
         self.assertNotIn("阅读方式", rendered)
-        self.assertIn("<article", rendered)
-        self.assertIn("<h2 style=", rendered)
-        self.assertIn("小节</h2>", rendered)
-        # ⚠️ callout renders as the unified magazine badge.
-        self.assertIn("background:#fdf6ec", rendered)
-        self.assertIn("border-left:3px solid #c2410c", rendered)
+        # Conservative native markup: Toutiao/SMZDM editors strip decorative CSS,
+        # so headings are bare <h2>, emphasis is <strong>, and callouts are
+        # native <blockquote> rather than a coloured magazine card.
+        self.assertIn("<h2>小节</h2>", rendered)
+        self.assertNotIn("<h2 style=", rendered)
+        self.assertNotIn("background:#fdf6ec", rendered)
+        self.assertNotIn("<section", rendered)
+        self.assertIn("<blockquote>", rendered)
+        self.assertIn("注意", rendered)
         self.assertIn("注意这件事", rendered)
-        self.assertIn("01.</span>第一步", rendered)
-        self.assertIn("02.</span>第二步", rendered)
-        self.assertIn("<table", rendered)
+        # Ordered list uses native <strong>N.</strong> leads (an <img> between the
+        # two "1." items splits the list, so the second restarts at 2.).
+        self.assertIn("<strong>1.</strong>", rendered)
+        self.assertIn("第一步", rendered)
+        self.assertIn("<strong>2.</strong>", rendered)
+        self.assertIn("第二步", rendered)
         self.assertIn("50%", rendered)
         self.assertIn("邮件提醒 + 检查资源", rendered)
         self.assertIn("<pre", rendered)
@@ -758,17 +770,17 @@ class BuildPublishPackageTests(unittest.TestCase):
             " **冲着技术去的，不是冲着 title 去的。** 这说明他真的觉得 Anthropic 在技术路线上更有搞头。"
         )
 
-        for platform in ("zhihu", "toutiao"):
+        for platform in ("toutiao", "smzdm"):
             with self.subTest(platform=platform):
                 rendered = build_publish_package.render_platform_html(platform, "标题", markdown)
 
-                # The magazine renderer styles bold runs as a single inline
-                # <span> (warm dark color + soft yellow underline) rather than
-                # a bare <strong>. We just need to make sure the bold cluster
-                # is rendered as one piece — no leaked Markdown asterisks and
-                # no broken-across-tags content.
-                self.assertIn("冲着技术去的，不是冲着 title 去的。", rendered)
-                self.assertIn("color:#1a1a1a;font-weight:700", rendered)
+                # Native renderer emits a single <strong> for the bold cluster —
+                # the whole point of the native path is that emphasis is semantic
+                # (survives style-stripping), not a styled <span>. We just need
+                # the bold run intact: no leaked asterisks, no break across tags.
+                self.assertIn(
+                    "<strong>冲着技术去的，不是冲着 title 去的。</strong>", rendered
+                )
                 self.assertNotIn("**冲着技术", rendered)
                 self.assertNotIn("** 这说明", rendered)
 
@@ -1037,8 +1049,11 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertNotIn("什么值得买 粘贴版", smzdm_html)
             self.assertNotIn("<h1", smzdm_html)
             self.assertNotIn("<header", smzdm_html)
-            # SMZDM now uses the same unified magazine wrapper as WeChat.
-            self.assertIn("<article", smzdm_html)
+            # SMZDM uses the conservative native renderer (no magazine <article>
+            # wrapper, no <section> cards): native <h2> and <blockquote> instead.
+            self.assertNotIn("<article", smzdm_html)
+            self.assertNotIn("<section", smzdm_html)
+            self.assertIn("<h2>", smzdm_html)
             self.assertIn("什么值得买正文粘贴版", smzdm_html)
 
             zhihu_md = (output / "platforms" / "zhihu.md").read_text(encoding="utf-8")
@@ -1155,6 +1170,40 @@ class BuildPublishPackageTests(unittest.TestCase):
 
             self.assertIn("converted", result["tables"])
             self.assertIn("kept", result["tables"])
+
+    def test_normalize_cjk_punctuation_converts_only_chinese_context(self):
+        n = build_publish_package.normalize_cjk_punctuation
+        # Half-width punctuation inside Chinese prose becomes full-width.
+        self.assertEqual(n("还稳不稳,别只盯"), "还稳不稳，别只盯")
+        self.assertEqual(n("开篇:AI 涨成这样,还能看懂吗?"), "开篇：AI 涨成这样，还能看懂吗？")
+        # Sees through emphasis markers + spaces: "...回报** :" -> full-width.
+        self.assertEqual(n("有回报** :下面"), "有回报** ：下面")
+        # Digit groups, inline code, and link targets are left untouched.
+        self.assertEqual(n("约 3,800 亿"), "约 3,800 亿")
+        self.assertEqual(n("`a,b:c` 普通,文本"), "`a,b:c` 普通，文本")
+        self.assertEqual(
+            n("见 [榜单](https://x.ai/r?a=1,b=2),很直观"),
+            "见 [榜单](https://x.ai/r?a=1,b=2)，很直观",
+        )
+        # Pure ASCII context stays half-width.
+        self.assertEqual(n("GPT-4,Claude: hi"), "GPT-4,Claude: hi")
+
+    def test_punct_normalization_default_on_and_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "a.md"
+            src.write_text("# 标题\n\n还稳不稳,别只盯股价\n", encoding="utf-8")
+
+            on = Path(tmp) / "on.publish"
+            build_publish_package.build_package(src, on, table_mode="never")
+            on_html = (on / "wechat.html").read_text(encoding="utf-8")
+            self.assertIn("稳不稳，别", on_html)
+
+            off = Path(tmp) / "off.publish"
+            build_publish_package.build_package(
+                src, off, table_mode="never", normalize_punctuation=False
+            )
+            off_html = (off / "wechat.html").read_text(encoding="utf-8")
+            self.assertIn("稳不稳,别", off_html)
 
     def test_cli_smoke_writes_report_json(self):
         fixture = Path(__file__).resolve().parent / "fixtures" / "article.md"

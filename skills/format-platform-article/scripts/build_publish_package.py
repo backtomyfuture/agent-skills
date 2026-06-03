@@ -149,9 +149,12 @@ CALLOUT_MARKERS = {
     "❤️": ("推荐", "#fdf6ec", "#c2410c", "#7c2d12"),
     "🧰": ("工具", "#fdf6ec", "#c2410c", "#7c2d12"),
     "📏": ("口径", "#fdf6ec", "#c2410c", "#7c2d12"),
-    "🟢": ("绿灯", "#f4f7f4", "#15803d", "#14532d"),
-    "🟡": ("黄灯", "#fef7e6", "#b45309", "#7c2d12"),
-    "🔴": ("红灯", "#fef2f2", "#dc2626", "#7f1d1d"),
+    # Traffic-light callouts carry a buy/wait/sell signal, so their fills are
+    # tinted clearly green/amber/red — enough to read at a glance, still soft
+    # enough to sit inside the warm magazine column rather than shouting.
+    "🟢": ("绿灯", "#e7f4eb", "#15803d", "#14532d"),
+    "🟡": ("黄灯", "#fbf0d0", "#b45309", "#7c2d12"),
+    "🔴": ("红灯", "#fbe7e4", "#dc2626", "#7f1d1d"),
 }
 CODE_PLACEHOLDERS = {
     "UUID": "UUID",
@@ -181,6 +184,18 @@ ZSXQ_CAPTION_STYLE = "margin:0.35em 0 1.25em;text-align:center;color:#6b7280;fon
 # an image and describe it. Detect them so they get pill-style caption styling instead of
 # leaking raw asterisks into the rendered output.
 IMAGE_CAPTION_RE = re.compile(r"^\*?\s*([▼▲►◀↓↑→←▷◁])\s+(.+?)\s*\*?$")
+
+# Generic placeholder alt-text that should never become a visible caption.
+# "image" is Notion's default export alt; "diagram" is the sentinel we attach to
+# rendered mermaid/graphviz PNGs, which already carry their title inside the image,
+# so a "▼ diagram" caption underneath would just read as a broken label.
+GENERIC_IMAGE_ALTS = {"image", "diagram"}
+
+
+def has_visible_caption(alt_text: str) -> bool:
+    """Whether an image's alt text is meaningful enough to show as a caption."""
+    stripped = alt_text.strip()
+    return bool(stripped) and stripped.lower() not in GENERIC_IMAGE_ALTS
 
 
 def warning(code: str, message: str, **extra: object) -> dict[str, object]:
@@ -405,6 +420,68 @@ def normalize_notion_quote_callouts(markdown: str) -> str:
     return pattern.sub(r"\1\2 ", markdown)
 
 
+# Han ideographs (incl. Ext-A) plus the full-width punctuation we ourselves emit,
+# so a run like "结论，判断" still counts the comma's neighbours as CJK.
+_CJK_CHAR = re.compile(r"[㐀-鿿豈-﫿，。：；？！、「」『』（）《》—…]")
+# Half-width -> full-width for punctuation that, in Chinese prose, should be
+# full-width. We deliberately leave the period (.) alone: it doubles as a decimal
+# point and English full-stop, and the source already uses full-width 。 anyway.
+_PUNCT_FULLWIDTH = {",": "，", ":": "：", ";": "；", "?": "？", "!": "！"}
+
+
+def normalize_cjk_punctuation(markdown: str) -> str:
+    """Convert half-width , : ; ? ! to full-width when they sit in Chinese text.
+
+    Notion authors routinely type half-width commas/colons inside Chinese
+    sentences ("还稳不稳,别只盯股价"), which reads as unpolished against the
+    full-width 。 the same source uses. Top-tier Chinese columns are uniformly
+    full-width, so we normalise — but only when a CJK character is adjacent, and
+    never inside code, links, or digit groups like 3,800. Code spans and URLs are
+    stashed out first so their punctuation is never touched.
+    """
+    stash: list[str] = []
+
+    def _stash(match: re.Match[str]) -> str:
+        stash.append(match.group(0))
+        return f"\x00{len(stash) - 1}\x00"
+
+    # Protect fenced code, inline code, markdown link/image targets, bare URLs.
+    text = re.sub(r"```.*?```", _stash, markdown, flags=re.S)
+    text = re.sub(r"`[^`]*`", _stash, text)
+    text = re.sub(r"\]\([^)]*\)", _stash, text)
+    text = re.sub(r"https?://\S+", _stash, text)
+
+    def _is_cjk(ch: str) -> bool:
+        return bool(ch) and bool(_CJK_CHAR.match(ch))
+
+    chars = list(text)
+
+    def _nearest(i: int, step: int) -> str:
+        # Look outward for the nearest meaningful char, stepping over emphasis
+        # markers and inline spaces so "...回报** ：" still sees the CJK before
+        # the bold close. Stops at line breaks so we never cross paragraphs.
+        j = i + step
+        while 0 <= j < len(chars) and chars[j] in ("*", " ", "\t"):
+            j += step
+        return chars[j] if 0 <= j < len(chars) else ""
+
+    for i, ch in enumerate(chars):
+        full = _PUNCT_FULLWIDTH.get(ch)
+        if full is None:
+            continue
+        # Keep digit-group commas like 3,800 / 1,234 half-width (immediate
+        # neighbours only — a thousands separator never has a space).
+        imm_prev = chars[i - 1] if i > 0 else ""
+        imm_next = chars[i + 1] if i + 1 < len(chars) else ""
+        if ch == "," and imm_prev.isdigit() and imm_next.isdigit():
+            continue
+        if _is_cjk(_nearest(i, -1)) or _is_cjk(_nearest(i, 1)):
+            chars[i] = full
+    text = "".join(chars)
+
+    return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
+
+
 def markdown_inline_to_html(text: str) -> str:
     escaped = html.escape(text)
     escaped = re.sub(
@@ -604,9 +681,12 @@ def render_callout(text: str) -> str:
         f'<section style="margin:30px 0;padding:20px 22px 18px;background:{background};'
         f'border-left:3px solid {border};border-radius:2px 10px 10px 2px;color:{color};'
         'font-size:15.5px;line-height:1.95;width:100%;box-sizing:border-box;">'
-        f'<p style="margin:0 0 8px;color:{border};font-size:12px;font-weight:800;'
-        'letter-spacing:2px;text-transform:uppercase;line-height:1.4;">'
-        f'<span style="margin-right:6px;">{html.escape(marker)}</span>'
+        # The label is a real callout title, not a tiny eyebrow: Chinese ignores
+        # text-transform:uppercase and looks sparse under wide letter-spacing, so
+        # WeChat columns read better with a bold, body-plus-sized, colored title.
+        f'<p style="margin:0 0 10px;color:{border};font-size:16px;font-weight:700;'
+        'letter-spacing:0.5px;line-height:1.5;">'
+        f'<span style="margin-right:7px;font-size:17px;">{html.escape(marker)}</span>'
         f'{html.escape(label)}'
         '</p>'
         f'<p style="margin:0;color:{color};font-size:15.5px;line-height:1.95;font-weight:400;">'
@@ -805,7 +885,7 @@ def render_image_block(
             "</p>"
         )
     caption = ""
-    if alt_text.strip() and alt_text.strip().lower() != "image" and not is_table_image:
+    if has_visible_caption(alt_text) and not is_table_image:
         caption = (
             '<p style="margin:-4px 0 28px;text-align:center;line-height:1.65;color:#8a8a8a;'
             'font-size:13px;letter-spacing:0.4px;">'
@@ -912,21 +992,18 @@ def render_blocks(
             ordered_number = 0
             quote_lines.clear()
             return
+        # A quote is just a warm cream card with a terracotta left rule and
+        # italic body. We deliberately skip decorative “/” glyphs: readers found
+        # the big serif quotation marks distracting, and the left rule + italic
+        # already read clearly as a quotation.
         html_lines.append(
-            '<section style="margin:30px 0;padding:18px 24px 14px;background:#fdf6ec;'
+            '<section style="margin:30px 0;padding:18px 24px;background:#fdf6ec;'
             'border-left:3px solid #c2410c;border-radius:2px 10px 10px 2px;'
-            'width:100%;box-sizing:border-box;position:relative;">'
-            '<p style="margin:0 0 6px;color:#c2410c;font-size:22px;line-height:1;'
-            "font-family:Georgia,serif;font-weight:700;\">&ldquo;</p>"
+            'width:100%;box-sizing:border-box;">'
             '<p style="margin:0;color:#3c2a14;font-size:15.5px;line-height:1.95;'
             'font-style:italic;letter-spacing:0.3px;">'
             + markdown_inline_to_html(text)
             + "</p>"
-            # Editorial closing glyph: a small terracotta &rdquo; aligned to
-            # the right tail so the quote card visually "closes" instead of
-            # trailing off into whitespace.
-            '<p style="margin:4px 0 0;color:#c2410c;font-size:20px;line-height:1;'
-            "font-family:Georgia,serif;font-weight:700;text-align:right;\">&rdquo;</p>"
             "</section>"
         )
         ordered_number = 0
@@ -1362,20 +1439,6 @@ def render_toutiao_callout(text: str) -> str:
     )
 
 
-def should_promote_toutiao_quote(text: str) -> bool:
-    plain = strip_inline_markdown(text)
-    if plain.startswith(("先说结论：", "整个流程：", "适合你：", "先看重点：")):
-        return True
-    keyword_groups = (
-        ("不支持直接导入", "需要手动新建"),
-        ("复制保存到本地", "不要发到任何公开平台"),
-        ("不用时停止实例", "别留闲置资源"),
-        ("不要碰 GPU", "负载均衡"),
-        ("Standard persistent disk", "Standard"),
-    )
-    return any(all(keyword in plain for keyword in keywords) for keywords in keyword_groups)
-
-
 def render_toutiao_quote_paragraph(text: str) -> str:
     return "<blockquote><p>" + markdown_inline_to_editor_html(text) + "</p></blockquote>"
 
@@ -1427,11 +1490,11 @@ def render_toutiao_blocks(
             html_lines.append(render_toutiao_callout(text))
         elif IMAGE_CAPTION_RE.match(text):
             html_lines.append(render_editor_image_caption(text))
-        elif should_promote_toutiao_quote(text):
-            html_lines.append(render_toutiao_quote_paragraph(text))
         else:
-            for paragraph_text in split_zsxq_paragraph(text, max_chars=80):
-                html_lines.append("<p>" + markdown_inline_to_editor_html(paragraph_text) + "</p>")
+            # Keep the author's paragraph intact (one <p>). We do not split on
+            # sentence boundaries or promote paragraphs to quotes by keyword —
+            # that was overfit to one past article and surprised every other one.
+            html_lines.append("<p>" + markdown_inline_to_editor_html(text) + "</p>")
         ordered_number = 0
         paragraph.clear()
 
@@ -1581,41 +1644,41 @@ PLATFORM_TITLE_SUFFIX = {
 }
 
 
-def render_magazine_platform_html(
+def render_native_platform_html(
     platform: str,
     title: str,
     markdown: str,
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    """Render a non-WeChat platform's article body using the same magazine
-    layout as WeChat.
+    """Render Toutiao / SMZDM with conservative, editor-safe native tags.
 
-    All four richtext platforms (Zhihu, Toutiao, Zsxq, SMZDM) accept inline
-    CSS pasted from a browser preview. By sharing the WeChat magazine
-    renderer (`render_blocks`) every callout / emoji badge / code block /
-    table / list improvement automatically benefits every platform — one
-    place to fix, one regression test surface.
-
-    The only per-platform differences are:
-    - the `<title>` suffix shown in the browser tab,
-    - the image mode (Zhihu uses `placeholder`/HTTPS, others use `data`).
+    Unlike WeChat, these editors aggressively sanitise pasted HTML: background
+    colours, `<section>` wrappers, box-shadows and styled-`<span>` emphasis are
+    dropped on paste. A magazine layout then collapses into unstyled text — and
+    worse, **bold** built from a styled `<span>` loses its weight entirely,
+    because the span carries no semantic emphasis. So we emit native structure
+    instead — `<h2>`/`<h3>`, `<strong>`/`<em>`, `<ul>`/`<ol>`, `<blockquote>`
+    for callouts and quotes, `<img>`, `<pre><code>` — so the semantics survive
+    whatever the editor keeps. Callout labels become a bold "emoji 标签：" lead
+    inside the blockquote rather than relying on a coloured card.
     """
-    body = render_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    body = render_toutiao_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
     safe_title = html.escape(title)
-    suffix = PLATFORM_TITLE_SUFFIX.get(platform, str(PLATFORM_PROFILES[platform]["label"]))
-    safe_suffix = html.escape(suffix)
+    suffix = html.escape(
+        PLATFORM_TITLE_SUFFIX.get(platform, str(PLATFORM_PROFILES[platform]["label"]))
+    )
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{safe_title} - {safe_suffix}</title>
+  <title>{safe_title} - {suffix}</title>
 </head>
-<body style="box-sizing:border-box;margin:0;background:#f7f3ec;padding:18px 0;overflow-x:hidden;">
-  <article style="width:calc(100% - 40px);max-width:720px;box-sizing:border-box;margin:0 auto;background:#ffffff;padding:30px 22px 36px;color:#222222;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;">
+<body style="margin:0;padding:20px 16px;background:#ffffff;color:#222222;font-size:16px;line-height:1.8;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;">
+<div style="max-width:720px;margin:0 auto;">
 {body}
-  </article>
+</div>
 </body>
 </html>
 """
@@ -1627,7 +1690,7 @@ def render_toutiao_html(
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
-    return render_magazine_platform_html("toutiao", title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    return render_native_platform_html("toutiao", title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
 
 
 def render_platform_html(
@@ -1637,13 +1700,14 @@ def render_platform_html(
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
 ) -> str:
+    # Zhihu never reaches here (it goes through md2zhihu). The remaining HTML
+    # targets — Toutiao, Zsxq, SMZDM — all use conservative native renderers
+    # rather than the WeChat magazine layout, because their editors strip the
+    # decorative inline CSS the magazine style depends on. Zsxq has its own
+    # renderer (no tables, text markers); Toutiao and SMZDM share the native one.
     if platform == "zsxq":
         return render_zsxq_html(title, markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
-
-    # Other richtext HTML targets keep the shared magazine renderer. Zsxq is
-    # intentionally separate because its editor pastes WeChat-style wrappers
-    # poorly and works better with low-style native tags.
-    return render_magazine_platform_html(
+    return render_native_platform_html(
         platform,
         title,
         markdown,
@@ -2249,7 +2313,10 @@ def _render_mermaid_to_png(
 
     diagrams_dir = output_dir / "assets" / "diagrams"
     diagrams_dir.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha1(code.encode("utf-8")).hexdigest()[:12]
+    # Cache key includes a theme version so changing the warm theme below busts
+    # stale cached PNGs instead of silently reusing the old palette.
+    cache_key = f"v2-magazine\x00{code}"
+    digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()[:12]
     out_path = diagrams_dir / f"mermaid_{digest}.png"
     if out_path.exists() and out_path.stat().st_size > 0:
         return out_path
@@ -2259,6 +2326,37 @@ def _render_mermaid_to_png(
     ) as tf:
         tf.write(code)
         tmp_in = tf.name
+    # A warm theme so the chart reads as part of the terracotta/cream magazine
+    # column instead of the stock teal mermaid default. xychart variables are
+    # nested under "xyChart"; the plotColorPalette drives line/bar colour.
+    config = {
+        "theme": "base",
+        "themeVariables": {
+            "fontFamily": "-apple-system,'PingFang SC','Microsoft YaHei',sans-serif",
+            "primaryColor": "#fdf6ec",
+            "primaryBorderColor": "#c2410c",
+            "primaryTextColor": "#1a1a1a",
+            "lineColor": "#c2410c",
+            "xyChart": {
+                "backgroundColor": "#ffffff",
+                "titleColor": "#1a1a1a",
+                "plotColorPalette": "#c2410c",
+                "xAxisLabelColor": "#5a5a5a",
+                "xAxisTitleColor": "#5a5a5a",
+                "xAxisLineColor": "#d8ccb6",
+                "xAxisTickColor": "#d8ccb6",
+                "yAxisLabelColor": "#5a5a5a",
+                "yAxisTitleColor": "#5a5a5a",
+                "yAxisLineColor": "#d8ccb6",
+                "yAxisTickColor": "#d8ccb6",
+            },
+        },
+    }
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".json", delete=False, encoding="utf-8"
+    ) as cf:
+        json.dump(config, cf)
+        tmp_cfg = cf.name
     try:
         completed = subprocess.run(
             [
@@ -2271,6 +2369,8 @@ def _render_mermaid_to_png(
                 "white",
                 "-s",
                 "2",
+                "-c",
+                tmp_cfg,
             ],
             capture_output=True,
             text=True,
@@ -2280,10 +2380,11 @@ def _render_mermaid_to_png(
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
     finally:
-        try:
-            os.unlink(tmp_in)
-        except OSError:
-            pass
+        for tmp in (tmp_in, tmp_cfg):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     if completed.returncode != 0 or not out_path.exists():
         return None
@@ -2572,6 +2673,7 @@ def build_package(
     open_target: str = "zhihu",
     download_remote_images: bool = True,
     remote_downloader: Optional[Callable[[str, Path, int], Optional[Path]]] = None,
+    normalize_punctuation: bool = True,
 ) -> dict[str, object]:
     source = Path(source_path).resolve()
     output = Path(output_dir).resolve()
@@ -2593,6 +2695,8 @@ def build_package(
         remote_downloader=remote_downloader,
     )
     normalized = normalize_notion_quote_callouts(normalized)
+    if normalize_punctuation:
+        normalized = normalize_cjk_punctuation(normalized)
     warnings.extend(image_warnings)
     warnings.extend(detect_raw_html_warnings(normalized))
 
@@ -2631,7 +2735,9 @@ def build_package(
 
     outputs: list[str] = ["wechat.html"]
 
-    # Toutiao / Zsxq / SMZDM still share the magazine HTML renderer.
+    # Toutiao / Zsxq / SMZDM each use a conservative native renderer (their
+    # editors strip the WeChat magazine's decorative inline CSS); see
+    # render_platform_html. Zhihu is handled separately below via md2zhihu.
     platform_outputs: list[str] = []
     platform_markdown = rewrite_asset_paths_for_platforms(normalized)
     for platform in RICH_HTML_PLATFORMS:
@@ -2786,6 +2892,14 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         default="zhihu",
         help="Which output to open after build (default: zhihu opens platforms/zhihu.md for import).",
     )
+    parser.add_argument(
+        "--no-punct-normalize",
+        dest="normalize_punctuation",
+        action="store_false",
+        help="Keep authored half-width punctuation. By default, half-width , : ; ? ! "
+        "inside Chinese text are converted to full-width （，：；？！）; code, links, and "
+        "digit groups like 3,800 are left untouched.",
+    )
     return parser.parse_args(argv)
 
 
@@ -2806,6 +2920,7 @@ def main(argv: list[str] | None = None) -> int:
             open_after_build=args.open_after_build,
             open_target=args.open_target,
             download_remote_images=not args.no_download_remote_images,
+            normalize_punctuation=args.normalize_punctuation,
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
