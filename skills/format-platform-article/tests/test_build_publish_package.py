@@ -410,13 +410,14 @@ class BuildPublishPackageTests(unittest.TestCase):
             "第一段导语。\n\n- 准备账号\n- 准备信用卡\n\n---\n\n⚠️ 不要开启付费升级。",
         )
 
-        # Unordered list items render as standalone paragraphs with an inline
-        # accent bullet — <ul>/<li> are dropped because WeChat strips their
-        # list-style cosmetics and the inline bullet survives paste.
+        # Unordered list items render as standalone paragraphs led by a real "•"
+        # glyph — <ul>/<li> are dropped because WeChat mangles them on paste, and
+        # a CSS-shape dot (empty styled span) gets stripped too, so we use a
+        # literal bullet character that always survives.
         self.assertIn("准备账号", rendered)
         self.assertIn("准备信用卡", rendered)
-        self.assertIn("background:#c2410c", rendered)
-        self.assertIn("border-radius:50%", rendered)
+        self.assertIn(">•</span>", rendered)
+        self.assertNotIn("border-radius:50%", rendered)
         # Divider is the editorial three-dot pause, not raw dashes or <hr>.
         self.assertIn("● ● ●", rendered)
         self.assertIn("color:#c2a874", rendered)

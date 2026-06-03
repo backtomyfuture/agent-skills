@@ -744,11 +744,15 @@ def render_list(items: list[str], ordered: bool, start: int | None = None) -> st
             )
         return "".join(rendered)
 
+    # Use a real "•" glyph for the bullet, not an empty CSS-shape <span>. WeChat's
+    # paste sanitizer drops empty / background-only inline elements, so the old
+    # dot vanished on copy-paste and the items collapsed into ordinary
+    # paragraphs (the list looked like it disappeared). A literal character is
+    # text, so it always survives — the same reason dividers use real chars.
     rendered_items = "".join(
         '<p style="font-size:16px;line-height:1.95;margin:0 0 10px;color:#2b2b2b;'
         'padding-left:4px;box-sizing:border-box;">'
-        '<span style="display:inline-block;width:5px;height:5px;background:#c2410c;'
-        'border-radius:50%;vertical-align:3px;margin-right:12px;"></span>'
+        '<span style="color:#c2410c;font-weight:700;margin-right:8px;">•</span>'
         + markdown_inline_to_html(item.strip())
         + "</p>"
         for item in items
