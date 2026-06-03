@@ -90,16 +90,16 @@ PLATFORM_PROFILES: dict[str, dict[str, object]] = {
     },
     "zsxq": {
         "label": "知识星球",
-        "recommended": "platforms/zsxq.html",
-        "fallback": "assets/ + image-manifest.md",
+        "recommended": "platforms/zsxq.md",
+        "fallback": "platforms/zsxq.html（富文本模式兜底）+ image-manifest.md",
         "html_image_mode": "data",
-        "editor_model": "网页端长文章，官方说明支持 100000 字符、图文混排、超链接和一些 Markdown 语法。",
-        "image_strategy": "复制 zsxq.html 的富文本结构，图片已用 Base64 内嵌；若平台拒绝内嵌图片，再按 image-manifest.md 从 assets/ 兜底上传。",
-        "code_strategy": "代码块保留为原生 pre/code，避免复杂内联样式被知识星球清洗后变形。",
+        "editor_model": "网页端长文章编辑器有两套模式：富文本(Quill)和 Markdown(Milkdown)。Markdown 模式下粘贴 Markdown 会被解析成原生节点——> 转成知识星球原生引用卡片、## 原生标题、| | 原生表格。zsxq.md 就是为这个模式准备的。",
+        "image_strategy": "推荐 zsxq.md：切到 Markdown 模式粘贴正文，图片按 image-manifest.md 顺序手工插入（或用 publish-zsxq-article 的二进制粘贴流程）。富文本模式兜底用 zsxq.html（Base64 内嵌图片）。",
+        "code_strategy": "Markdown 代码块 ``` 在 Markdown 模式下转成原生代码块；HTML 兜底里保留原生 pre/code。",
         "notes": [
             "长文走网页版“长文章”，不要用 App 主题流承载长教程。",
-            "zsxq.html 刻意不使用公众号杂志卡片、背景和复杂 inline style；标题、段落、列表、代码块尽量保留为平台更稳的原生结构。",
-            "高价值段落使用文本安全的 ▍ 标记；如果图片被清洗，再按 image-manifest.md 从 assets/ 手工补传。",
+            "推荐 zsxq.md + Markdown 模式：引用/提示块(>)直接渲染成知识星球原生引用样式，无需 ▍ 文本标记；标题、列表、表格都走原生。",
+            "若坚持用富文本模式粘贴，则用 zsxq.html 兜底——但其 <blockquote> 会被编辑器拍平成普通段落，拿不到原生引用样式（已实测）。",
             "如果链接被吞或样式异常，改用完整裸链接或编辑器内插入超链接。",
         ],
         "sources": [
@@ -2734,6 +2734,22 @@ def build_package(
         platform_outputs.append(html_relative)
 
     outputs.extend(platform_outputs)
+
+    # Zsxq (recommended): an import-ready Markdown file. Zsxq's long-article
+    # editor has a Markdown mode (Milkdown/ProseMirror) that parses pasted
+    # Markdown into NATIVE nodes — `>` becomes Zsxq's own blue quote card,
+    # `##` a native heading, `**` bold, `- ` a native list, and `| |` a native
+    # table. (We verified this live in the editor.) So instead of fighting the
+    # rich-text editor's HTML sanitizer with a `▍` text marker, we hand Zsxq the
+    # Markdown and let it render its own native styling. We reuse the pre-table
+    # snapshot (native `| |` tables kept; mermaid already rasterized to PNG,
+    # which Milkdown can't render) and rewrite asset paths for the platforms/
+    # subdir. Paste it in the editor's Markdown mode (or via publish-zsxq-article).
+    zsxq_md = rewrite_asset_paths_for_platforms(zhihu_source_markdown)
+    if not zsxq_md.endswith("\n"):
+        zsxq_md += "\n"
+    write_text(output / "platforms" / "zsxq.md", zsxq_md)
+    outputs.append("platforms/zsxq.md")
 
     # Zhihu: delegate to md2zhihu to produce an import-ready Markdown file with
     # native equation images, mermaid/graphviz figures and git-hosted images.

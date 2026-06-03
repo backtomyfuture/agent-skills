@@ -991,6 +991,9 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertTrue((output / "platforms" / "zhihu.md").exists())
             self.assertFalse((output / "platforms" / "zhihu.html").exists())
             self.assertTrue((output / "platforms" / "toutiao.html").exists())
+            # Zsxq ships a recommended Markdown file (native styling in the
+            # editor's Markdown mode) plus the rich-text-mode HTML fallback.
+            self.assertTrue((output / "platforms" / "zsxq.md").exists())
             self.assertTrue((output / "platforms" / "zsxq.html").exists())
             self.assertTrue((output / "platforms" / "smzdm.html").exists())
             self.assertTrue((output / "report.json").exists())
@@ -1011,7 +1014,6 @@ class BuildPublishPackageTests(unittest.TestCase):
                 "zhihu-remote.html",
                 "zhihu-image-map.template.json",
                 "toutiao.md",
-                "zsxq.md",
                 "smzdm.md",
                 "platform-guide.md",
                 "platform-report.json",
@@ -1083,6 +1085,15 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertNotIn("<p><br></p>", zsxq_html)
             self.assertNotIn("<article", zsxq_html)
             self.assertNotIn("知识星球长文粘贴版", zsxq_html)
+
+            # Recommended Zsxq output is Markdown: quotes stay as `>` blockquotes
+            # (so Zsxq's Markdown mode renders its native quote card), no `▍`
+            # text marker, and images are local refs (never Base64).
+            zsxq_md = (output / "platforms" / "zsxq.md").read_text(encoding="utf-8")
+            self.assertIn("> 好的发布包应该先保证结构稳定，再考虑自动发布。", zsxq_md)
+            self.assertNotIn("▍", zsxq_md)
+            self.assertNotIn("data:image/", zsxq_md)
+            self.assertIn("../assets/sample.png", zsxq_md)
 
             self.assertTrue(any(item["code"] == "remote_image" for item in report["warnings"]))
 
