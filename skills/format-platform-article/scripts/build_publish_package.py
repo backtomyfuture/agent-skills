@@ -1765,7 +1765,7 @@ def render_zsxq_image_block(
     if image_mode == "placeholder":
         return f'<p style="{ZSXQ_PARAGRAPH_STYLE}"><strong>图片占位：</strong>{label}<br>{html.escape(src)}</p>'
     caption = ""
-    if alt_text.strip() and alt_text.strip().lower() != "image" and not is_generated_table_image(src):
+    if has_visible_caption(alt_text) and not is_generated_table_image(src):
         caption = f'<p style="{ZSXQ_CAPTION_STYLE}"><em>▼ {label}</em></p>'
     return f'<p style="margin:1.15em 0 0;text-align:center;"><img src="{safe_src}" alt="{label}" style="{ZSXQ_IMAGE_STYLE}"></p>' + caption
 
@@ -1792,53 +1792,26 @@ def render_zsxq_ordered_list(items: list[str], start: int) -> str:
     return "\n".join(paragraphs)
 
 
-def split_zsxq_paragraph(text: str, max_chars: int = 86) -> list[str]:
-    if len(strip_inline_markdown(text)) <= max_chars:
-        return [text]
-    segments = re.split(r"(?<=[。！？；])\s*", text)
-    chunks: list[str] = []
-    current = ""
-    for segment in segments:
-        if not segment:
-            continue
-        candidate = current + segment if current else segment
-        if current and len(strip_inline_markdown(candidate)) > max_chars and not has_unclosed_inline_markup(current):
-            chunks.append(current)
-            current = segment
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return chunks or [text]
-
-
-def has_unclosed_inline_markup(text: str) -> bool:
-    # Sentence splitting must not leave half of **bold**, __bold__, or `code`
-    # in one paragraph and the closing marker in the next.
-    value = re.sub(r"\\.", "", text)
-    return value.count("**") % 2 == 1 or value.count("__") % 2 == 1 or value.count("`") % 2 == 1
-
-
 def render_zsxq_callout(text: str) -> str:
+    # Zsxq strips background cards, so a callout reads clearest as a bold label
+    # on its own line with the body underneath — a plain-text "小标题 + 正文"
+    # block. This is calmer and easier to scan than the old inline
+    # "▍emoji 标签：正文" run-on, and it matches the audience's priority of
+    # clarity over decoration. The leading ▍ bar is reserved for real quotes.
     marker, label, body = parse_callout(text)
-    return (
-        f'<p style="{ZSXQ_QUOTE_STYLE}">'
-        f"<strong>{ZSXQ_QUOTE_MARKER}{html.escape((marker + ' ' + label + '：').strip())}</strong>"
-        f"{markdown_inline_to_editor_html(body)}"
-        "</p>"
+    head = (marker + " " + label).strip()
+    label_html = (
+        '<p style="margin:1.35em 0 0.25em;line-height:1.6;font-size:16px;color:#111827;">'
+        f"<strong>{html.escape(head)}</strong></p>"
     )
-
-
-def should_promote_zsxq_quote(text: str) -> bool:
-    plain = strip_inline_markdown(text)
-    if plain.startswith("整个流程："):
-        return True
-    keyword_groups = (
-        ("不支持直接导入", "需要手动新建"),
-        ("复制保存到本地", "不要发到任何公开平台"),
-        ("不用时停止实例", "别留闲置资源"),
+    if not body.strip():
+        return label_html
+    body_html = (
+        '<p style="margin:0 0 1.1em;line-height:1.85;font-size:16px;color:#1f2937;">'
+        + markdown_inline_to_editor_html(body)
+        + "</p>"
     )
-    return any(all(keyword in plain for keyword in keywords) for keywords in keyword_groups)
+    return label_html + body_html
 
 
 def render_zsxq_quote_paragraph(text: str) -> str:
@@ -1870,11 +1843,11 @@ def render_zsxq_blocks(
             html_lines.append(render_zsxq_callout(text))
         elif IMAGE_CAPTION_RE.match(text):
             html_lines.append(render_editor_image_caption(text))
-        elif should_promote_zsxq_quote(text):
-            html_lines.append(render_zsxq_quote_paragraph(text))
         else:
-            for paragraph_text in split_zsxq_paragraph(text):
-                html_lines.append(f'<p style="{ZSXQ_PARAGRAPH_STYLE}">' + markdown_inline_to_editor_html(paragraph_text) + "</p>")
+            # Keep the author's paragraph intact — no keyword-based promotion to
+            # quotes and no sentence-splitting (both were overfit to one past
+            # article and surprised every other one).
+            html_lines.append(f'<p style="{ZSXQ_PARAGRAPH_STYLE}">' + markdown_inline_to_editor_html(text) + "</p>")
         ordered_number = 0
         paragraph.clear()
 

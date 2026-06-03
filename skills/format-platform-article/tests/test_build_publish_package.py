@@ -285,7 +285,8 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertIn("绿灯 · 主线还在加速", rendered)
 
         self.assertIn("background:#fdf6ec", wechat)
-        self.assertIn("▍", zsxq)
+        # Zsxq callouts render as a clean bold label line (no inline ▍ bar).
+        self.assertIn("<strong>🟢 绿灯 · 主线还在加速</strong>", zsxq)
 
     def test_blockquote_without_callout_marker_renders_clean_quote_card(self):
         # Plain blockquote (no warning marker) renders as a warm cream card with
@@ -585,7 +586,9 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertIn("<body style=", rendered)
         self.assertIn('<h2 style="', rendered)
         self.assertIn(">小节</h2>", rendered)
-        self.assertIn("<strong>▍⚠️ 注意：</strong>注意这件事。</p>", rendered)
+        # Callout: bold label on its own line, body underneath (no inline ▍ bar).
+        self.assertIn("<strong>⚠️ 注意</strong>", rendered)
+        self.assertIn("注意这件事。", rendered)
         self.assertIn("<ul>", rendered)
         self.assertIn("连接失败", rendered)
         self.assertIn("检查端口", rendered)
@@ -639,25 +642,26 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("预算提醒", rendered)
         self.assertNotIn("先说价值", rendered)
 
-    def test_render_zsxq_promotes_high_value_paragraphs_to_visual_quotes(self):
-        # The Zsxq renderer uses a text-safe ▍ marker for high-value
-        # paragraphs because pasted inline CSS is unreliable in its editor.
+    def test_render_zsxq_keeps_authored_paragraphs_without_overfit_promotion(self):
+        # The old renderer promoted certain paragraphs to ▍ "visual quotes" based
+        # on hardcoded phrases ("整个流程：", "不用时停止实例"…) overfit to one past
+        # article. That logic is gone: authored paragraphs render as plain <p>,
+        # and the ▍ bar is reserved for real `>` quotes only.
         rendered = build_publish_package.render_platform_html(
             "zsxq",
             "标题",
             "整个流程：**创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通**。\n\n"
             "**把这整段链接复制保存到本地**。这就是你的客户端配置，不要发到任何公开平台。\n\n"
-            "Clash Verge Rev **不支持直接导入** `vless://` **链接**，需要手动新建一个本地 YAML 配置文件。\n\n"
             "不用时停止实例；确定不用了，删除 VM、磁盘、静态 IP 和项目，别留闲置资源。\n\n"
             "普通操作说明继续用正文。",
             image_mode="data",
         )
 
-        self.assertIn("<strong>▍</strong>&nbsp;整个流程：<strong>创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通</strong>。</p>", rendered)
-        self.assertIn("<strong>▍</strong>&nbsp;<strong>把这整段链接复制保存到本地</strong>。这就是你的客户端配置，不要发到任何公开平台。</p>", rendered)
-        self.assertIn("<strong>▍</strong>&nbsp;Clash Verge Rev <strong>不支持直接导入</strong> <code>vless://</code> <strong>链接</strong>，需要手动新建一个本地 YAML 配置文件。</p>", rendered)
-        self.assertIn("<strong>▍</strong>&nbsp;不用时停止实例；确定不用了，删除 VM、磁盘、静态 IP 和项目，别留闲置资源。</p>", rendered)
+        self.assertIn("整个流程：", rendered)
+        self.assertIn("把这整段链接复制保存到本地", rendered)
         self.assertIn("普通操作说明继续用正文。", rendered)
+        # No keyword-based promotion to a ▍ quote marker.
+        self.assertNotIn("▍", rendered)
         self.assertNotIn("color:#1a1a1a;font-weight:700", rendered)
 
     def test_render_zsxq_keeps_ai_article_out_of_wechat_magazine_layout(self):
@@ -674,7 +678,8 @@ class BuildPublishPackageTests(unittest.TestCase):
         rendered = build_publish_package.render_platform_html("zsxq", "AI", markdown, image_mode="data")
 
         self.assertIn("<title>AI - 知识星球</title>", rendered)
-        self.assertIn("<strong>▍📖 导读：</strong>｜这一年", rendered)
+        self.assertIn("<strong>📖 导读</strong>", rendered)
+        self.assertIn("｜这一年", rendered)
         self.assertNotIn("📖 &gt;", rendered)
         self.assertIn(">01｜每个时代，都有一种「奇迹材料」</h2>", rendered)
         self.assertIn(">文章一上来，就把视角拉得很高。</p>", rendered)
