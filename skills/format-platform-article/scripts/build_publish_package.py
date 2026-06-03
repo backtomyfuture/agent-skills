@@ -147,6 +147,11 @@ CALLOUT_MARKERS = {
     "📌": ("置顶", "#fdf6ec", "#c2410c", "#7c2d12"),
     "📣": ("通知", "#fdf6ec", "#c2410c", "#7c2d12"),
     "❤️": ("推荐", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "🧰": ("工具", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "📏": ("口径", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "🟢": ("绿灯", "#f4f7f4", "#15803d", "#14532d"),
+    "🟡": ("黄灯", "#fef7e6", "#b45309", "#7c2d12"),
+    "🔴": ("红灯", "#fef2f2", "#dc2626", "#7f1d1d"),
 }
 CODE_PLACEHOLDERS = {
     "UUID": "UUID",
@@ -866,12 +871,16 @@ def render_blocks(
     list_ordered = False
     in_code = False
     code_language = ""
-    first_paragraph = True
+    # `pending_lead_in` is True for the very first paragraph of the article and
+    # again right after every H2, so each section opens with a slightly larger,
+    # deeper-colored lead paragraph (editorial column rhythm). It is consumed
+    # by the next non-callout, non-caption paragraph and then auto-resets.
+    pending_lead_in = True
     ordered_number = 0
     image_index = 0
 
     def flush_paragraph() -> None:
-        nonlocal first_paragraph, ordered_number
+        nonlocal pending_lead_in, ordered_number
         if not paragraph:
             return
         text = " ".join(item.strip() for item in paragraph).strip()
@@ -882,11 +891,14 @@ def render_blocks(
         else:
             style = (
                 "font-size:17px;line-height:2.05;margin:0 0 26px;color:#1a1a1a;font-weight:400;letter-spacing:0.3px;"
-                if first_paragraph
+                if pending_lead_in
                 else "font-size:16px;line-height:2;margin:0 0 22px;color:#2b2b2b;letter-spacing:0.2px;"
             )
             html_lines.append(f'<p style="{style}">' + markdown_inline_to_html(text) + "</p>")
-        first_paragraph = False
+            # Only true text paragraphs consume the lead-in flag; callouts and
+            # image captions do not, so the next real paragraph still gets the
+            # bigger opener treatment.
+            pending_lead_in = False
         ordered_number = 0
         paragraph.clear()
 
@@ -901,7 +913,7 @@ def render_blocks(
             quote_lines.clear()
             return
         html_lines.append(
-            '<section style="margin:30px 0;padding:18px 24px;background:#fdf6ec;'
+            '<section style="margin:30px 0;padding:18px 24px 14px;background:#fdf6ec;'
             'border-left:3px solid #c2410c;border-radius:2px 10px 10px 2px;'
             'width:100%;box-sizing:border-box;position:relative;">'
             '<p style="margin:0 0 6px;color:#c2410c;font-size:22px;line-height:1;'
@@ -909,7 +921,13 @@ def render_blocks(
             '<p style="margin:0;color:#3c2a14;font-size:15.5px;line-height:1.95;'
             'font-style:italic;letter-spacing:0.3px;">'
             + markdown_inline_to_html(text)
-            + "</p></section>"
+            + "</p>"
+            # Editorial closing glyph: a small terracotta &rdquo; aligned to
+            # the right tail so the quote card visually "closes" instead of
+            # trailing off into whitespace.
+            '<p style="margin:4px 0 0;color:#c2410c;font-size:20px;line-height:1;'
+            "font-family:Georgia,serif;font-weight:700;text-align:right;\">&rdquo;</p>"
+            "</section>"
         )
         ordered_number = 0
         quote_lines.clear()
@@ -971,6 +989,10 @@ def render_blocks(
                     + "</h2>"
                 )
                 ordered_number = 0
+                # Each H2 opens a new section; the very next text paragraph
+                # should be styled as the section lead-in (bigger, deeper
+                # color) to match the magazine column rhythm.
+                pending_lead_in = True
             else:
                 html_lines.append(
                     '<h3 style="font-size:18px;line-height:1.6;margin:40px 0 18px;color:#1a1a1a;'
@@ -2206,6 +2228,143 @@ def markdown_table_script_path() -> Path:
     return Path(__file__).resolve().parents[2] / "markdown-table-images" / "scripts" / "render_markdown_tables.py"
 
 
+MERMAID_BLOCK_RE = re.compile(
+    r"^([ \t]{0,3})```\s*mermaid\s*\n(.*?)(?:\n)?^\1```[ \t]*$\n?",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _render_mermaid_to_png(
+    code: str,
+    output_dir: Path,
+    binary: str,
+) -> Path | None:
+    """Render a single mermaid snippet to a PNG via mmdc.
+
+    Returns the absolute output path on success, or None on failure. The
+    filename is content-addressed so re-running the build reuses the same
+    image and produces stable diffs.
+    """
+    import hashlib
+
+    diagrams_dir = output_dir / "assets" / "diagrams"
+    diagrams_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha1(code.encode("utf-8")).hexdigest()[:12]
+    out_path = diagrams_dir / f"mermaid_{digest}.png"
+    if out_path.exists() and out_path.stat().st_size > 0:
+        return out_path
+
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".mmd", delete=False, encoding="utf-8"
+    ) as tf:
+        tf.write(code)
+        tmp_in = tf.name
+    try:
+        completed = subprocess.run(
+            [
+                binary,
+                "-i",
+                tmp_in,
+                "-o",
+                str(out_path),
+                "-b",
+                "white",
+                "-s",
+                "2",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    finally:
+        try:
+            os.unlink(tmp_in)
+        except OSError:
+            pass
+
+    if completed.returncode != 0 or not out_path.exists():
+        return None
+    return out_path
+
+
+def convert_mermaid_blocks_if_available(
+    markdown: str,
+    output_dir: Path,
+) -> tuple[str, list[dict[str, str]], list[dict[str, object]]]:
+    """Replace ```mermaid``` fenced blocks with PNG image references.
+
+    Uses the mermaid-cli binary (`mmdc`) when available, mirroring how
+    md2zhihu handles diagrams. On success the fenced block is replaced
+    with a standard Markdown image so every downstream renderer (WeChat,
+    Toutiao, Zsxq, SMZDM, Zhihu via md2zhihu) embeds the same picture.
+    On failure or when `mmdc` is missing, the block is left untouched and
+    a single warning is emitted so the reader is not stuck staring at raw
+    mermaid source code.
+    """
+    if "```mermaid" not in markdown and "``` mermaid" not in markdown:
+        return markdown, [], []
+
+    binary = shutil.which("mmdc")
+    blocks = list(MERMAID_BLOCK_RE.finditer(markdown))
+    if not blocks:
+        return markdown, [], []
+
+    warnings: list[dict[str, object]] = []
+    if not binary:
+        warnings.append(
+            warning(
+                "mermaid_renderer_missing",
+                "Found mermaid code blocks but mmdc (mermaid-cli) was not on PATH; "
+                "raw mermaid source will appear in the article. Install with "
+                "`npm install -g @mermaid-js/mermaid-cli` and rebuild to render diagrams as PNG.",
+                count=len(blocks),
+            )
+        )
+        return markdown, [], warnings
+
+    assets: list[dict[str, str]] = []
+    rendered: list[tuple[re.Match[str], Path]] = []
+    failures = 0
+    for match in blocks:
+        code = match.group(2).strip("\n")
+        if not code.strip():
+            continue
+        out_path = _render_mermaid_to_png(code, output_dir, binary)
+        if out_path is None:
+            failures += 1
+            continue
+        rendered.append((match, out_path))
+        assets.append(
+            {
+                "source": "generated_mermaid",
+                "output": str(out_path.relative_to(output_dir)),
+            }
+        )
+
+    if failures:
+        warnings.append(
+            warning(
+                "mermaid_render_failed",
+                f"mmdc failed to render {failures} mermaid block(s); raw source kept inline.",
+                failures=failures,
+            )
+        )
+
+    if not rendered:
+        return markdown, assets, warnings
+
+    # Walk replacements back-to-front so earlier indices stay valid.
+    result = markdown
+    for match, out_path in reversed(rendered):
+        rel = out_path.relative_to(output_dir).as_posix()
+        replacement = f"\n![diagram]({rel})\n"
+        result = result[: match.start()] + replacement + result[match.end() :]
+    return result, assets, warnings
+
+
 def convert_tables_if_requested(
     markdown: str,
     output_dir: Path,
@@ -2240,7 +2399,10 @@ def convert_tables_if_requested(
             "--image-dir",
             "assets/tables",
             "--theme",
-            "publication",
+            # Warm cream header + terracotta accent so rasterized tables
+            # blend into the WeChat magazine column instead of looking like
+            # a pasted-in dark engineering screenshot.
+            "magazine",
         ]
         if table_mode == "always":
             command.extend(["--min-rows", "1", "--min-cols", "2", "--min-cells", "2"])
@@ -2433,6 +2595,16 @@ def build_package(
     normalized = normalize_notion_quote_callouts(normalized)
     warnings.extend(image_warnings)
     warnings.extend(detect_raw_html_warnings(normalized))
+
+    # Pre-render mermaid diagrams to PNG so every platform (WeChat, Toutiao,
+    # Zsxq, SMZDM, and Zhihu via md2zhihu) embeds the same picture. Without
+    # this the WeChat HTML would show raw `xychart-beta / line ...` source
+    # to readers, since the magazine renderer has no in-process mermaid
+    # support. We run this BEFORE the Zhihu snapshot so md2zhihu also picks
+    # up the rendered image instead of re-rasterizing the source.
+    normalized, mermaid_assets, mermaid_warnings = convert_mermaid_blocks_if_available(normalized, output)
+    assets.extend(mermaid_assets)
+    warnings.extend(mermaid_warnings)
 
     # Snapshot the image-localized body BEFORE table->PNG conversion: md2zhihu
     # renders Markdown tables to native HTML for Zhihu, which beats shipping a
