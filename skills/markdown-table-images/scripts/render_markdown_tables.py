@@ -65,6 +65,12 @@ class TableTheme:
     alt_row_fill: str
     grid: str
     text: str
+    # Optional editorial accent: an extra rule drawn just under the header row.
+    # Skipped when header_accent_height <= 0. Used by the magazine theme to
+    # mirror the "cream header + 2px terracotta underline" rule of the
+    # WeChat magazine HTML template.
+    header_accent_color: str = ""
+    header_accent_height: int = 0
 
 
 THEMES = {
@@ -97,6 +103,29 @@ THEMES = {
         alt_row_fill="#f8fafc",
         grid="#e5e7eb",
         text="#1f2937",
+    ),
+    # Warm magazine theme that matches the WeChat magazine HTML palette:
+    # cream header, terracotta header text, soft warm zebra rows, and a
+    # 2px terracotta underline below the header. Use this when the table
+    # image will sit inside the format-platform-article wechat.html column
+    # so the rasterized table doesn't look like a foreign engineering
+    # screenshot pasted into an editorial layout.
+    "magazine": TableTheme(
+        name="magazine",
+        padding_x=20,
+        padding_y=14,
+        min_row_height=58,
+        border=1,
+        outer_padding=18,
+        background="#ffffff",
+        header_fill="#fdf6ec",
+        header_text="#7c2d12",
+        row_fill="#ffffff",
+        alt_row_fill="#fcf7ee",
+        grid="#ece4d6",
+        text="#2b2118",
+        header_accent_color="#c2410c",
+        header_accent_height=2,
     ),
 }
 
@@ -492,6 +521,24 @@ def render_table(
                 s(6),
             )
             x += cell_w
+        # Editorial header accent: draw a thin colored bar across the bottom
+        # of the header row. Only when the theme opts in (magazine).
+        if (
+            row_index == 0
+            and theme.header_accent_height > 0
+            and theme.header_accent_color
+        ):
+            accent_h = s(theme.header_accent_height)
+            accent_y_bottom = s(y + row_heights[row_index])
+            draw.rectangle(
+                [
+                    s(theme.outer_padding),
+                    accent_y_bottom - accent_h,
+                    s(theme.outer_padding + sum(col_widths)),
+                    accent_y_bottom,
+                ],
+                fill=theme.header_accent_color,
+            )
         y += row_heights[row_index]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -600,7 +647,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--font", help="Optional TrueType/OpenType font path.")
     parser.add_argument("--max-width", type=int, default=1400, help="Maximum PNG width before high-DPI scaling.")
     parser.add_argument("--font-size", type=int, default=24, help="Base font size before high-DPI scaling.")
-    parser.add_argument("--theme", choices=sorted(THEMES), default="publication", help="Visual theme for rendered table images.")
+    parser.add_argument("--theme", choices=sorted(THEMES), default="publication", help="Visual theme for rendered table images. Choices: plain, publication, magazine.")
     parser.add_argument("--backup", action="store_true", help="When output equals input, create INPUT.bak first.")
     parser.add_argument("--dry-run", action="store_true", help="Report what would be converted without writing files.")
     return parser.parse_args(argv)

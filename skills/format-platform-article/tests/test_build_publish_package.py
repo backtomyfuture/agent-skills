@@ -259,6 +259,31 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("&gt;", rendered)
         self.assertNotIn("&ldquo;", rendered)
 
+    def test_notion_style_callout_cleanup_covers_article_marker_emojis(self):
+        markdown = "\n\n".join(
+            [
+                "> 🧰 >  **这篇文章先看大趋势** 指标二、三需要用脚本逐周计算。",
+                "> 📏 >  **先把口径说在前面:** 下面这张对照表只用来看方向。",
+                "> 🟢 >  **绿灯 · 主线还在加速** 付费 Token 三条线同时向上。",
+                "> 🟡 >  **黄灯 · 只是流量热闹** 免费模型涨得欢。",
+                "> 🔴 >  **红灯 · 准备防守** Token 增长明显放缓。",
+            ]
+        )
+
+        wechat = build_publish_package.render_wechat_html("标题", markdown)
+        toutiao = build_publish_package.render_toutiao_html("标题", markdown)
+        zsxq = build_publish_package.render_zsxq_html("标题", markdown)
+
+        for rendered in (wechat, toutiao, zsxq):
+            self.assertNotIn("&gt;", rendered)
+            self.assertNotIn("**这篇文章先看大趋势**", rendered)
+            self.assertNotIn("**绿灯 · 主线还在加速**", rendered)
+            self.assertIn("这篇文章先看大趋势", rendered)
+            self.assertIn("绿灯 · 主线还在加速", rendered)
+
+        self.assertIn("background:#fdf6ec", wechat)
+        self.assertIn("▍", zsxq)
+
     def test_blockquote_without_callout_marker_keeps_literary_quote(self):
         # Plain blockquote (no warning marker) should still render with the
         # editorial curly-quote treatment — this is a deliberate accent for
