@@ -94,7 +94,7 @@ PLATFORM_PROFILES: dict[str, dict[str, object]] = {
         "fallback": "platforms/zsxq.html（富文本模式兜底）+ image-manifest.md",
         "html_image_mode": "data",
         "editor_model": "网页端长文章编辑器有两套模式：富文本(Quill)和 Markdown(Milkdown)。Markdown 模式下粘贴 Markdown 会被解析成原生节点——> 转成知识星球原生引用卡片、## 原生标题、| | 原生表格。zsxq.md 就是为这个模式准备的。",
-        "image_strategy": "推荐 zsxq.md：切到 Markdown 模式粘贴正文，图片按 image-manifest.md 顺序手工插入（或用 publish-zsxq-article 的二进制粘贴流程）。富文本模式兜底用 zsxq.html（Base64 内嵌图片）。",
+        "image_strategy": "zsxq.md 里图片是 [[IMG_N]] 文本占位符并标注 assets/ 路径（Markdown 模式无法加载本地路径图片，data-URI 又会在发布时被拒）。切到 Markdown 模式粘贴正文后，按占位符位置把对应图片以二进制粘贴插入（手动复制 PNG 粘贴，或用 publish-zsxq-article 自动二进制粘贴上传到 CDN）。富文本模式兜底用 zsxq.html（Base64 内嵌图片）。",
         "code_strategy": "Markdown 代码块 ``` 在 Markdown 模式下转成原生代码块；HTML 兜底里保留原生 pre/code。",
         "notes": [
             "长文走网页版“长文章”，不要用 App 主题流承载长教程。",
@@ -869,17 +869,29 @@ def image_src_for_mode(src: str, image_mode: str, asset_base_dir: Path | None = 
     return f"data:{mime_type};base64,{encoded}"
 
 
-def embed_markdown_images_as_data_uri(markdown: str, asset_base_dir: Path) -> str:
-    """Rewrite local Markdown image refs (`![](../assets/x.png)`) to self-contained
-    `data:` URIs. Zsxq's Markdown-mode editor accepts a data-URI image from a plain
-    text paste, so embedding lets a single paste carry both text and images into the
-    draft (avoiding a separate per-image binary paste). Remote/`data:` srcs and any
-    file that cannot be read are left untouched."""
+def placeholder_zsxq_images(markdown: str) -> str:
+    """Replace local Markdown image refs with a visible text placeholder that
+    marks the spot and annotates the file to insert.
+
+    Zsxq's Markdown-mode editor cannot pull in `![](localpath)` images from a
+    text paste (the path won't load) and rejects inlined data: URIs at publish
+    time. The reliable route is to paste each image as binary at its position
+    (manually, or via the publish-zsxq-article skill). So in `zsxq.md` we turn
+    every local image into a greppable `[[IMG_N]]` marker — matching
+    publish-zsxq-article's convention — followed by the asset path, so after the
+    text paste you can see exactly where each image goes and which file to drop
+    in. Remote / data: images are left as normal Markdown."""
+    counter = {"n": 0}
+
     def repl(match: re.Match[str]) -> str:
         alt, raw_src = match.group(1), match.group(2)
         src = clean_image_target(raw_src)
-        data = image_src_for_mode(src, "data", asset_base_dir)
-        return match.group(0) if data == src else f"![{alt}]({data})"
+        if REMOTE_RE.match(src) or src.startswith("data:"):
+            return match.group(0)
+        counter["n"] += 1
+        label = alt.strip()
+        suffix = f"（{label}）" if label and label.lower() not in GENERIC_IMAGE_ALTS else ""
+        return f"[[IMG_{counter['n']}]] 🖼 在此插入图片：{src}{suffix}"
 
     return IMAGE_RE.sub(repl, markdown)
 
@@ -2666,7 +2678,6 @@ def build_package(
     download_remote_images: bool = True,
     remote_downloader: Optional[Callable[[str, Path, int], Optional[Path]]] = None,
     normalize_punctuation: bool = True,
-    zsxq_embed_images: bool = False,
 ) -> dict[str, object]:
     source = Path(source_path).resolve()
     output = Path(output_dir).resolve()
@@ -2761,13 +2772,13 @@ def build_package(
     # snapshot (native `| |` tables kept; mermaid already rasterized to PNG,
     # which Milkdown can't render) and rewrite asset paths for the platforms/
     # subdir. Paste it in the editor's Markdown mode (or via publish-zsxq-article).
-    zsxq_md = rewrite_asset_paths_for_platforms(zhihu_source_markdown)
-    if zsxq_embed_images:
-        # One-paste convenience: inline images as data: URIs so the Markdown
-        # paste alone carries them. Whether they survive *publish* (vs binary
-        # paste → CDN upload, which publish-zsxq-article uses) is platform
-        # behaviour the user should confirm once before relying on it.
-        zsxq_md = embed_markdown_images_as_data_uri(zsxq_md, output / "platforms")
+    # Images become `[[IMG_N]]` text placeholders (with the asset path) rather
+    # than `![](localpath)` refs: Markdown mode can't load local paths and
+    # rejects data: URIs at publish, so images must be binary-pasted at their
+    # spot. The placeholder shows where each goes and which file to insert,
+    # paste-able as plain text. Asset paths stay publish-root-relative
+    # (`assets/...`) so they match the package layout you browse.
+    zsxq_md = placeholder_zsxq_images(zhihu_source_markdown)
     if not zsxq_md.endswith("\n"):
         zsxq_md += "\n"
     write_text(output / "platforms" / "zsxq.md", zsxq_md)
@@ -2908,14 +2919,6 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Which output to open after build (default: zhihu opens platforms/zhihu.md for import).",
     )
     parser.add_argument(
-        "--zsxq-embed-images",
-        dest="zsxq_embed_images",
-        action="store_true",
-        help="Inline images in platforms/zsxq.md as data: URIs so a single Markdown "
-        "paste carries them into Zsxq's Markdown-mode draft. Confirm publish survival "
-        "before relying on it; otherwise paste images via binary paste / publish-zsxq-article.",
-    )
-    parser.add_argument(
         "--no-punct-normalize",
         dest="normalize_punctuation",
         action="store_false",
@@ -2944,7 +2947,6 @@ def main(argv: list[str] | None = None) -> int:
             open_target=args.open_target,
             download_remote_images=not args.no_download_remote_images,
             normalize_punctuation=args.normalize_punctuation,
-            zsxq_embed_images=args.zsxq_embed_images,
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)

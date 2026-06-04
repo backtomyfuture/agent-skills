@@ -1088,12 +1088,18 @@ class BuildPublishPackageTests(unittest.TestCase):
 
             # Recommended Zsxq output is Markdown: quotes stay as `>` blockquotes
             # (so Zsxq's Markdown mode renders its native quote card), no `▍`
-            # text marker, and images are local refs (never Base64).
+            # marker, no Base64, and images become greppable [[IMG_N]] text
+            # placeholders (with the asset path) rather than broken local refs.
             zsxq_md = (output / "platforms" / "zsxq.md").read_text(encoding="utf-8")
             self.assertIn("> 好的发布包应该先保证结构稳定，再考虑自动发布。", zsxq_md)
             self.assertNotIn("▍", zsxq_md)
             self.assertNotIn("data:image/", zsxq_md)
-            self.assertIn("../assets/sample.png", zsxq_md)
+            self.assertIn("[[IMG_1]]", zsxq_md)
+            self.assertIn("assets/sample.png", zsxq_md)
+            # The local image is now a placeholder, not a broken Markdown ref...
+            self.assertNotIn("](assets/sample.png)", zsxq_md)
+            # ...but a remote image URL stays a normal ref (it loads in-editor).
+            self.assertIn("![远程图片](https://example.com/remote.png)", zsxq_md)
 
             self.assertTrue(any(item["code"] == "remote_image" for item in report["warnings"]))
 
