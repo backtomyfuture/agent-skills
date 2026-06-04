@@ -285,7 +285,8 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertIn("绿灯 · 主线还在加速", rendered)
 
         self.assertIn("background:#fdf6ec", wechat)
-        self.assertIn("▍", zsxq)
+        # Zsxq callouts render as a clean bold label line (no inline ▍ bar).
+        self.assertIn("<strong>🟢 绿灯 · 主线还在加速</strong>", zsxq)
 
     def test_blockquote_without_callout_marker_renders_clean_quote_card(self):
         # Plain blockquote (no warning marker) renders as a warm cream card with
@@ -395,12 +396,12 @@ class BuildPublishPackageTests(unittest.TestCase):
 
     def test_inline_bold_still_works_alongside_italic(self):
         # The italic regex must not accidentally swallow ** bold ** markers.
-        # Bold uses the editorial "highlighter" marker (bold + amber underline)
-        # so we assert the structural pieces rather than an exact style string.
+        # Bold is weight + deep near-black only (no amber underline) so a
+        # bold-heavy article does not turn into a wall of underlines.
         rendered = build_publish_package.render_wechat_html("标题", "**重要** 和 *次要*")
 
         self.assertIn("font-weight:700", rendered)
-        self.assertIn("border-bottom:2px solid #fcd34d", rendered)
+        self.assertNotIn("border-bottom:2px solid #fcd34d", rendered)
         self.assertIn(">重要</span>", rendered)
         self.assertIn(">次要</em>", rendered)
 
@@ -410,13 +411,14 @@ class BuildPublishPackageTests(unittest.TestCase):
             "第一段导语。\n\n- 准备账号\n- 准备信用卡\n\n---\n\n⚠️ 不要开启付费升级。",
         )
 
-        # Unordered list items render as standalone paragraphs with an inline
-        # accent bullet — <ul>/<li> are dropped because WeChat strips their
-        # list-style cosmetics and the inline bullet survives paste.
+        # Unordered list items render as standalone paragraphs led by a real "•"
+        # glyph — <ul>/<li> are dropped because WeChat mangles them on paste, and
+        # a CSS-shape dot (empty styled span) gets stripped too, so we use a
+        # literal bullet character that always survives.
         self.assertIn("准备账号", rendered)
         self.assertIn("准备信用卡", rendered)
-        self.assertIn("background:#c2410c", rendered)
-        self.assertIn("border-radius:50%", rendered)
+        self.assertIn(">•</span>", rendered)
+        self.assertNotIn("border-radius:50%", rendered)
         # Divider is the editorial three-dot pause, not raw dashes or <hr>.
         self.assertIn("● ● ●", rendered)
         self.assertIn("color:#c2a874", rendered)
@@ -584,7 +586,9 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertIn("<body style=", rendered)
         self.assertIn('<h2 style="', rendered)
         self.assertIn(">小节</h2>", rendered)
-        self.assertIn("<strong>▍⚠️ 注意：</strong>注意这件事。</p>", rendered)
+        # Callout: bold label on its own line, body underneath (no inline ▍ bar).
+        self.assertIn("<strong>⚠️ 注意</strong>", rendered)
+        self.assertIn("注意这件事。", rendered)
         self.assertIn("<ul>", rendered)
         self.assertIn("连接失败", rendered)
         self.assertIn("检查端口", rendered)
@@ -638,25 +642,26 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertNotIn("预算提醒", rendered)
         self.assertNotIn("先说价值", rendered)
 
-    def test_render_zsxq_promotes_high_value_paragraphs_to_visual_quotes(self):
-        # The Zsxq renderer uses a text-safe ▍ marker for high-value
-        # paragraphs because pasted inline CSS is unreliable in its editor.
+    def test_render_zsxq_keeps_authored_paragraphs_without_overfit_promotion(self):
+        # The old renderer promoted certain paragraphs to ▍ "visual quotes" based
+        # on hardcoded phrases ("整个流程：", "不用时停止实例"…) overfit to one past
+        # article. That logic is gone: authored paragraphs render as plain <p>,
+        # and the ▍ bar is reserved for real `>` quotes only.
         rendered = build_publish_package.render_platform_html(
             "zsxq",
             "标题",
             "整个流程：**创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通**。\n\n"
             "**把这整段链接复制保存到本地**。这就是你的客户端配置，不要发到任何公开平台。\n\n"
-            "Clash Verge Rev **不支持直接导入** `vless://` **链接**，需要手动新建一个本地 YAML 配置文件。\n\n"
             "不用时停止实例；确定不用了，删除 VM、磁盘、静态 IP 和项目，别留闲置资源。\n\n"
             "普通操作说明继续用正文。",
             image_mode="data",
         )
 
-        self.assertIn("<strong>▍</strong>&nbsp;整个流程：<strong>创建服务器 → 开端口 → 跑脚本 → 导入 Clash Verge → 连通</strong>。</p>", rendered)
-        self.assertIn("<strong>▍</strong>&nbsp;<strong>把这整段链接复制保存到本地</strong>。这就是你的客户端配置，不要发到任何公开平台。</p>", rendered)
-        self.assertIn("<strong>▍</strong>&nbsp;Clash Verge Rev <strong>不支持直接导入</strong> <code>vless://</code> <strong>链接</strong>，需要手动新建一个本地 YAML 配置文件。</p>", rendered)
-        self.assertIn("<strong>▍</strong>&nbsp;不用时停止实例；确定不用了，删除 VM、磁盘、静态 IP 和项目，别留闲置资源。</p>", rendered)
+        self.assertIn("整个流程：", rendered)
+        self.assertIn("把这整段链接复制保存到本地", rendered)
         self.assertIn("普通操作说明继续用正文。", rendered)
+        # No keyword-based promotion to a ▍ quote marker.
+        self.assertNotIn("▍", rendered)
         self.assertNotIn("color:#1a1a1a;font-weight:700", rendered)
 
     def test_render_zsxq_keeps_ai_article_out_of_wechat_magazine_layout(self):
@@ -673,7 +678,8 @@ class BuildPublishPackageTests(unittest.TestCase):
         rendered = build_publish_package.render_platform_html("zsxq", "AI", markdown, image_mode="data")
 
         self.assertIn("<title>AI - 知识星球</title>", rendered)
-        self.assertIn("<strong>▍📖 导读：</strong>｜这一年", rendered)
+        self.assertIn("<strong>📖 导读</strong>", rendered)
+        self.assertIn("｜这一年", rendered)
         self.assertNotIn("📖 &gt;", rendered)
         self.assertIn(">01｜每个时代，都有一种「奇迹材料」</h2>", rendered)
         self.assertIn(">文章一上来，就把视角拉得很高。</p>", rendered)
@@ -806,8 +812,7 @@ class BuildPublishPackageTests(unittest.TestCase):
         # The bold label keeps the colon glued to "核心" so it cannot wrap onto
         # a new line and an &nbsp; separates the label cluster from the body.
         self.assertIn(
-            '<span style="color:#1a1a1a;font-weight:700;'
-            'border-bottom:2px solid #fcd34d;padding-bottom:1px;">核心：</span>'
+            '<span style="color:#1a1a1a;font-weight:700;">核心：</span>'
             '&nbsp;选择 Xray-core',
             rendered,
         )
@@ -986,8 +991,17 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertTrue((output / "platforms" / "zhihu.md").exists())
             self.assertFalse((output / "platforms" / "zhihu.html").exists())
             self.assertTrue((output / "platforms" / "toutiao.html").exists())
+            # Zsxq ships a recommended Markdown file (native styling in the
+            # editor's Markdown mode) plus the rich-text-mode HTML fallback.
+            self.assertTrue((output / "platforms" / "zsxq.md").exists())
             self.assertTrue((output / "platforms" / "zsxq.html").exists())
             self.assertTrue((output / "platforms" / "smzdm.html").exists())
+            # Xueqiu / Baijiahao: native rich-text HTML (like Toutiao).
+            self.assertTrue((output / "platforms" / "xueqiu.html").exists())
+            self.assertTrue((output / "platforms" / "baijiahao.html").exists())
+            # Juejin: full Markdown (Vditor editor). Xiaohongshu: plain-text note.
+            self.assertTrue((output / "platforms" / "juejin.md").exists())
+            self.assertTrue((output / "platforms" / "xiaohongshu.md").exists())
             self.assertTrue((output / "report.json").exists())
             self.assertTrue((output / "assets" / "sample.png").exists())
 
@@ -1006,7 +1020,6 @@ class BuildPublishPackageTests(unittest.TestCase):
                 "zhihu-remote.html",
                 "zhihu-image-map.template.json",
                 "toutiao.md",
-                "zsxq.md",
                 "smzdm.md",
                 "platform-guide.md",
                 "platform-report.json",
@@ -1078,6 +1091,44 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertNotIn("<p><br></p>", zsxq_html)
             self.assertNotIn("<article", zsxq_html)
             self.assertNotIn("知识星球长文粘贴版", zsxq_html)
+
+            # Recommended Zsxq output is Markdown: quotes stay as `>` blockquotes
+            # (so Zsxq's Markdown mode renders its native quote card), no `▍`
+            # marker, no Base64, and images become greppable [[IMG_N]] text
+            # placeholders (with the asset path) rather than broken local refs.
+            zsxq_md = (output / "platforms" / "zsxq.md").read_text(encoding="utf-8")
+            self.assertIn("> 好的发布包应该先保证结构稳定，再考虑自动发布。", zsxq_md)
+            self.assertNotIn("▍", zsxq_md)
+            self.assertNotIn("data:image/", zsxq_md)
+            self.assertIn("[[IMG_1]]", zsxq_md)
+            self.assertIn("assets/sample.png", zsxq_md)
+            # The local image is now a placeholder, not a broken Markdown ref...
+            self.assertNotIn("](assets/sample.png)", zsxq_md)
+            # ...but a remote image URL stays a normal ref (it loads in-editor).
+            self.assertIn("![远程图片](https://example.com/remote.png)", zsxq_md)
+
+            # Xueqiu / Baijiahao share Toutiao's native renderer: native <h2>/
+            # <strong>/<blockquote>, Base64 images, no magazine <section> cards.
+            for plat, suffix in (("xueqiu", "雪球长文粘贴版"), ("baijiahao", "百家号正文粘贴版")):
+                h = (output / "platforms" / f"{plat}.html").read_text(encoding="utf-8")
+                self.assertIn(f"- {suffix}</title>", h)
+                self.assertIn("<h2>", h)
+                self.assertNotIn("<section", h)
+                self.assertIn("data:image/png;base64,", h)
+
+            # Juejin: full Markdown with [[IMG_N]] image placeholders.
+            juejin_md = (output / "platforms" / "juejin.md").read_text(encoding="utf-8")
+            self.assertIn("[[IMG_1]]", juejin_md)
+            self.assertNotIn("](assets/sample.png)", juejin_md)
+            self.assertNotIn("data:image/", juejin_md)
+
+            # Xiaohongshu: plain-text note — no Markdown syntax, emoji kept, a
+            # length hint, and image placeholders (uploaded manually in-app).
+            xhs = (output / "platforms" / "xiaohongshu.md").read_text(encoding="utf-8")
+            self.assertIn("小红书正文上限约 1000 字", xhs)
+            self.assertNotIn("**", xhs)
+            self.assertNotIn("](assets/", xhs)
+            self.assertIn("[[IMG_1]]", xhs)
 
             self.assertTrue(any(item["code"] == "remote_image" for item in report["warnings"]))
 

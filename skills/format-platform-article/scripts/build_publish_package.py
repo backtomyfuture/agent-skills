@@ -34,12 +34,17 @@ REMOTE_IMAGE_TIMEOUT_SECONDS = 30
 REMOTE_IMAGE_MAX_BYTES = 25 * 1024 * 1024
 REMOTE_IMAGE_USER_AGENT = "format-platform-article/1.0 (+https://factory.ai)"
 REMOTE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"}
-PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm")
-# Zhihu is intentionally NOT in RICH_HTML_PLATFORMS: it is produced as an
-# import-ready Markdown file (platforms/zhihu.md) by md2zhihu, not as
-# paste-ready HTML. Zsxq is also special-cased later because its editor handles
-# low-style native tags better than the shared magazine wrapper.
-RICH_HTML_PLATFORMS = ("toutiao", "zsxq", "smzdm")
+PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm", "xueqiu", "baijiahao", "juejin", "xiaohongshu")
+# Primary outputs: Zhihu/Juejin → import-ready Markdown (md2zhihu / Vditor),
+# Zsxq → Markdown (zsxq.md), Xiaohongshu → plain-text note. RICH_HTML_PLATFORMS
+# are the rich-text editors that share the conservative native HTML renderer:
+# Toutiao/SMZDM/Xueqiu/Baijiahao, plus Zsxq (whose zsxq.html is the rich-text
+# mode fallback alongside the recommended zsxq.md).
+RICH_HTML_PLATFORMS = ("toutiao", "zsxq", "smzdm", "xueqiu", "baijiahao")
+# Personal default Git image bed for Zhihu (md2zhihu pushes images here and
+# rewrites them to raw HTTPS URLs, so zhihu.md imports with working images out
+# of the box). Override per-run with --zhihu-asset-repo or $ZHIHU_ASSET_REPO.
+DEFAULT_ZHIHU_ASSET_REPO = "https://github.com/backtomyfuture/images.git"
 PLATFORM_PROFILES: dict[str, dict[str, object]] = {
     "zhihu": {
         "label": "知乎",
@@ -90,16 +95,16 @@ PLATFORM_PROFILES: dict[str, dict[str, object]] = {
     },
     "zsxq": {
         "label": "知识星球",
-        "recommended": "platforms/zsxq.html",
-        "fallback": "assets/ + image-manifest.md",
+        "recommended": "platforms/zsxq.md",
+        "fallback": "platforms/zsxq.html（富文本模式兜底）+ image-manifest.md",
         "html_image_mode": "data",
-        "editor_model": "网页端长文章，官方说明支持 100000 字符、图文混排、超链接和一些 Markdown 语法。",
-        "image_strategy": "复制 zsxq.html 的富文本结构，图片已用 Base64 内嵌；若平台拒绝内嵌图片，再按 image-manifest.md 从 assets/ 兜底上传。",
-        "code_strategy": "代码块保留为原生 pre/code，避免复杂内联样式被知识星球清洗后变形。",
+        "editor_model": "网页端长文章编辑器有两套模式：富文本(Quill)和 Markdown(Milkdown)。Markdown 模式下粘贴 Markdown 会被解析成原生节点——> 转成知识星球原生引用卡片、## 原生标题、| | 原生表格。zsxq.md 就是为这个模式准备的。",
+        "image_strategy": "zsxq.md 里图片是 [[IMG_N]] 文本占位符并标注 assets/ 路径（Markdown 模式无法加载本地路径图片，data-URI 又会在发布时被拒）。切到 Markdown 模式粘贴正文后，按占位符位置把对应图片以二进制粘贴插入（手动复制 PNG 粘贴，或用 publish-zsxq-article 自动二进制粘贴上传到 CDN）。富文本模式兜底用 zsxq.html（Base64 内嵌图片）。",
+        "code_strategy": "Markdown 代码块 ``` 在 Markdown 模式下转成原生代码块；HTML 兜底里保留原生 pre/code。",
         "notes": [
             "长文走网页版“长文章”，不要用 App 主题流承载长教程。",
-            "zsxq.html 刻意不使用公众号杂志卡片、背景和复杂 inline style；标题、段落、列表、代码块尽量保留为平台更稳的原生结构。",
-            "高价值段落使用文本安全的 ▍ 标记；如果图片被清洗，再按 image-manifest.md 从 assets/ 手工补传。",
+            "推荐 zsxq.md + Markdown 模式：引用/提示块(>)直接渲染成知识星球原生引用样式，无需 ▍ 文本标记；标题、列表、表格都走原生。",
+            "若坚持用富文本模式粘贴，则用 zsxq.html 兜底——但其 <blockquote> 会被编辑器拍平成普通段落，拿不到原生引用样式（已实测）。",
             "如果链接被吞或样式异常，改用完整裸链接或编辑器内插入超链接。",
         ],
         "sources": [
@@ -131,6 +136,65 @@ PLATFORM_PROFILES: dict[str, dict[str, object]] = {
                 "url": "https://www.toutiao.com/zixun/7543077851290601518/",
             },
         ],
+    },
+    "xueqiu": {
+        "label": "雪球",
+        "recommended": "platforms/xueqiu.html",
+        "fallback": "assets/ + image-manifest.md",
+        "html_image_mode": "data",
+        "editor_model": "雪球「发长文」富文本编辑器（证券投资社区）。粘贴富文本，支持标题、加粗、引用、图片。",
+        "image_strategy": "复制 xueqiu.html 富文本结构，图片用 Base64 内嵌；大平台通常粘贴时自动上传，若被拒按 image-manifest.md 从 assets/ 补传。",
+        "code_strategy": "保留原生 pre/code；雪球读者偏投资，长代码尽量精简或转清单。",
+        "notes": [
+            "投资/财经选题最契合，引流到付费社群质量高；正文不带 H1，标题单独填。",
+            "默认采用与头条同款的原生渲染（未单独实测雪球编辑器，建议首次发布时核对图片与外链是否存活）。",
+        ],
+        "sources": [{"label": "雪球", "url": "https://xueqiu.com"}],
+    },
+    "baijiahao": {
+        "label": "百家号",
+        "recommended": "platforms/baijiahao.html",
+        "fallback": "assets/ + image-manifest.md",
+        "html_image_mode": "data",
+        "editor_model": "百度百家号图文富文本编辑器（类头条号），主要价值是蹭百度搜索 SEO 被动引流。",
+        "image_strategy": "复制 baijiahao.html 富文本结构，图片 Base64 内嵌；百家号粘贴时通常自动上传，否则按 image-manifest.md 补传。",
+        "code_strategy": "保留原生 pre/code。",
+        "notes": [
+            "正文不带 H1，标题单独填；站外链接多半会被限制，保留为文字。",
+            "默认与头条同款原生渲染（未单独实测，首次发布核对图片/外链）。",
+        ],
+        "sources": [{"label": "百家号", "url": "https://baijiahao.baidu.com"}],
+    },
+    "juejin": {
+        "label": "掘金",
+        "recommended": "platforms/juejin.md",
+        "fallback": "image-manifest.md",
+        "output_format": "markdown",
+        "html_image_mode": "markdown",
+        "editor_model": "掘金写文章用 Vditor Markdown 编辑器，直接吃 Markdown（标题/加粗/表格/代码块/公式），技术受众。",
+        "image_strategy": "juejin.md 里图片是 [[IMG_N]] 占位符并标注 assets/ 路径；粘贴 Markdown 后在掘金编辑器按占位符位置拖拽/粘贴图片上传到掘金图床。远程图片保留为 ![](url)。",
+        "code_strategy": "原生 Markdown 代码块 ```lang，掘金高亮友好，最适合带 API/Agent 等技术点的文章引流开发者。",
+        "notes": [
+            "标题单独填；juejin.md 只负责正文。",
+            "掘金支持原生表格/代码/公式，正文按 Markdown 直接粘贴即可。",
+        ],
+        "sources": [{"label": "掘金", "url": "https://juejin.cn"}],
+    },
+    "xiaohongshu": {
+        "label": "小红书",
+        "recommended": "platforms/xiaohongshu.md",
+        "fallback": "publish-xiaohongshu-article + image-manifest.md",
+        "output_format": "text",
+        "html_image_mode": "manual",
+        "editor_model": "小红书笔记：纯文本 + emoji + 空行分段，不支持 Markdown；正文上限约 1000 字，配图≤9 张（3:4），需封面图。",
+        "image_strategy": "图片需在 App/创作平台手工上传（≤9 张）；xiaohongshu.md 用 [[IMG_N]] 标注位置，配合 image-manifest.md，或直接用 publish-xiaohongshu-article 发布。",
+        "code_strategy": "无代码/表格概念；表格与代码已转成纯文本说明，复杂数据建议改成截图。",
+        "notes": [
+            "正文上限约 1000 字——长文必须精简成要点或拆成多条笔记，xiaohongshu.md 是去格式后的纯文本初稿，不要直接全量发。",
+            "已去掉 Markdown 语法、保留 emoji、用空行分段；首图与标题最关键。",
+            "实际发布建议用 publish-xiaohongshu-article skill。",
+        ],
+        "sources": [{"label": "小红书笔记排版规范", "url": "https://ostmcn.com/article-1185.html"}],
     },
 }
 CALLOUT_MARKERS = {
@@ -491,7 +555,7 @@ def markdown_inline_to_html(text: str) -> str:
     )
     escaped = re.sub(
         r"\*\*([^*]+)\*\*",
-        r'<span style="color:#1a1a1a;font-weight:700;border-bottom:2px solid #fcd34d;padding-bottom:1px;">\1</span>',
+        r'<span style="color:#1a1a1a;font-weight:700;">\1</span>',
         escaped,
     )
     # Italic: single * not adjacent to other * or word chars (avoids tripping on **bold** leftovers).
@@ -744,11 +808,15 @@ def render_list(items: list[str], ordered: bool, start: int | None = None) -> st
             )
         return "".join(rendered)
 
+    # Use a real "•" glyph for the bullet, not an empty CSS-shape <span>. WeChat's
+    # paste sanitizer drops empty / background-only inline elements, so the old
+    # dot vanished on copy-paste and the items collapsed into ordinary
+    # paragraphs (the list looked like it disappeared). A literal character is
+    # text, so it always survives — the same reason dividers use real chars.
     rendered_items = "".join(
         '<p style="font-size:16px;line-height:1.95;margin:0 0 10px;color:#2b2b2b;'
         'padding-left:4px;box-sizing:border-box;">'
-        '<span style="display:inline-block;width:5px;height:5px;background:#c2410c;'
-        'border-radius:50%;vertical-align:3px;margin-right:12px;"></span>'
+        '<span style="color:#c2410c;font-weight:700;margin-right:8px;">•</span>'
         + markdown_inline_to_html(item.strip())
         + "</p>"
         for item in items
@@ -863,6 +931,104 @@ def image_src_for_mode(src: str, image_mode: str, asset_base_dir: Path | None = 
     mime_type = sniff_image_mime(raw) or mimetypes.guess_type(path.name)[0] or "image/jpeg"
     encoded = base64.b64encode(raw).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
+
+
+def placeholder_zsxq_images(markdown: str) -> str:
+    """Replace local Markdown image refs with a visible text placeholder that
+    marks the spot and annotates the file to insert.
+
+    Zsxq's Markdown-mode editor cannot pull in `![](localpath)` images from a
+    text paste (the path won't load) and rejects inlined data: URIs at publish
+    time. The reliable route is to paste each image as binary at its position
+    (manually, or via the publish-zsxq-article skill). So in `zsxq.md` we turn
+    every local image into a greppable `[[IMG_N]]` marker — matching
+    publish-zsxq-article's convention — followed by the asset path, so after the
+    text paste you can see exactly where each image goes and which file to drop
+    in. Remote / data: images are left as normal Markdown."""
+    counter = {"n": 0}
+
+    def repl(match: re.Match[str]) -> str:
+        alt, raw_src = match.group(1), match.group(2)
+        src = clean_image_target(raw_src)
+        if REMOTE_RE.match(src) or src.startswith("data:"):
+            return match.group(0)
+        counter["n"] += 1
+        label = alt.strip()
+        suffix = f"（{label}）" if label and label.lower() not in GENERIC_IMAGE_ALTS else ""
+        return f"[[IMG_{counter['n']}]] 🖼 在此插入图片：{src}{suffix}"
+
+    return IMAGE_RE.sub(repl, markdown)
+
+
+def render_xiaohongshu_note(markdown: str, title: str) -> str:
+    """Render a Xiaohongshu (小红书) plain-text note draft.
+
+    Xiaohongshu notes are plain text + emoji + blank-line paragraphs — no
+    Markdown, no headings/bold/tables as syntax, body capped around 1000 chars,
+    ≤9 images. So we strip all Markdown to plain text (keeping emoji), turn
+    headings/quotes/list items into plain lines, flatten tables to ` ｜ `-joined
+    rows, drop code fences/dividers, and replace images with `[[IMG_N]]` markers
+    (images are uploaded manually in-app, ≤9). The result is a starting draft —
+    almost always over the limit, so it carries a length hint to trim/split."""
+    lines = markdown.splitlines()
+    out: list[str] = []
+    img_n = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("```"):  # code fence: keep inner text, drop fences
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                out.append(lines[i].rstrip())
+                i += 1
+            i += 1
+            continue
+        m = IMAGE_RE.fullmatch(stripped)
+        if m:
+            img_n += 1
+            out.append(f"[[IMG_{img_n}]]（插图：{clean_image_target(m.group(2))}）")
+            i += 1
+            continue
+        if stripped.startswith("|") and stripped.endswith("|") and "|" in stripped[1:]:
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if set("".join(cells)) <= set("-: "):  # table separator row
+                i += 1
+                continue
+            out.append(" ｜ ".join(strip_inline_markdown(c) for c in cells if c.strip()))
+            i += 1
+            continue
+        if HR_RE.match(line):
+            i += 1
+            continue
+        heading = HEADING_RE.match(line)
+        if heading:
+            out.append(strip_inline_markdown(heading.group(2).strip()))
+            i += 1
+            continue
+        if stripped.startswith(">"):
+            out.append(strip_inline_markdown(re.sub(r"^>\s?", "", stripped)))
+            i += 1
+            continue
+        ul = UNORDERED_LIST_RE.match(line)
+        ol = ORDERED_LIST_RE.match(line)
+        if ul:
+            out.append("· " + strip_inline_markdown(ul.group(1).strip()))
+            i += 1
+            continue
+        if ol:
+            out.append("· " + strip_inline_markdown(ol.group(1).strip()))
+            i += 1
+            continue
+        out.append(strip_inline_markdown(line))
+        i += 1
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    char_count = len(re.sub(r"\s", "", body))
+    header = (
+        f"【提示·发布前删除本行】小红书正文上限约 1000 字，本文纯文本约 {char_count} 字"
+        "，超出请精简成要点或拆成多条笔记；配图≤9 张，首图与标题另选。"
+    )
+    return header + "\n\n" + body + "\n"
 
 
 def render_image_block(
@@ -1641,6 +1807,8 @@ PLATFORM_TITLE_SUFFIX = {
     "toutiao": "今日头条正文粘贴版",
     "zsxq": "知识星球长文粘贴版",
     "smzdm": "什么值得买正文粘贴版",
+    "xueqiu": "雪球长文粘贴版",
+    "baijiahao": "百家号正文粘贴版",
 }
 
 
@@ -1761,7 +1929,7 @@ def render_zsxq_image_block(
     if image_mode == "placeholder":
         return f'<p style="{ZSXQ_PARAGRAPH_STYLE}"><strong>图片占位：</strong>{label}<br>{html.escape(src)}</p>'
     caption = ""
-    if alt_text.strip() and alt_text.strip().lower() != "image" and not is_generated_table_image(src):
+    if has_visible_caption(alt_text) and not is_generated_table_image(src):
         caption = f'<p style="{ZSXQ_CAPTION_STYLE}"><em>▼ {label}</em></p>'
     return f'<p style="margin:1.15em 0 0;text-align:center;"><img src="{safe_src}" alt="{label}" style="{ZSXQ_IMAGE_STYLE}"></p>' + caption
 
@@ -1788,53 +1956,26 @@ def render_zsxq_ordered_list(items: list[str], start: int) -> str:
     return "\n".join(paragraphs)
 
 
-def split_zsxq_paragraph(text: str, max_chars: int = 86) -> list[str]:
-    if len(strip_inline_markdown(text)) <= max_chars:
-        return [text]
-    segments = re.split(r"(?<=[。！？；])\s*", text)
-    chunks: list[str] = []
-    current = ""
-    for segment in segments:
-        if not segment:
-            continue
-        candidate = current + segment if current else segment
-        if current and len(strip_inline_markdown(candidate)) > max_chars and not has_unclosed_inline_markup(current):
-            chunks.append(current)
-            current = segment
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return chunks or [text]
-
-
-def has_unclosed_inline_markup(text: str) -> bool:
-    # Sentence splitting must not leave half of **bold**, __bold__, or `code`
-    # in one paragraph and the closing marker in the next.
-    value = re.sub(r"\\.", "", text)
-    return value.count("**") % 2 == 1 or value.count("__") % 2 == 1 or value.count("`") % 2 == 1
-
-
 def render_zsxq_callout(text: str) -> str:
+    # Zsxq strips background cards, so a callout reads clearest as a bold label
+    # on its own line with the body underneath — a plain-text "小标题 + 正文"
+    # block. This is calmer and easier to scan than the old inline
+    # "▍emoji 标签：正文" run-on, and it matches the audience's priority of
+    # clarity over decoration. The leading ▍ bar is reserved for real quotes.
     marker, label, body = parse_callout(text)
-    return (
-        f'<p style="{ZSXQ_QUOTE_STYLE}">'
-        f"<strong>{ZSXQ_QUOTE_MARKER}{html.escape((marker + ' ' + label + '：').strip())}</strong>"
-        f"{markdown_inline_to_editor_html(body)}"
-        "</p>"
+    head = (marker + " " + label).strip()
+    label_html = (
+        '<p style="margin:1.35em 0 0.25em;line-height:1.6;font-size:16px;color:#111827;">'
+        f"<strong>{html.escape(head)}</strong></p>"
     )
-
-
-def should_promote_zsxq_quote(text: str) -> bool:
-    plain = strip_inline_markdown(text)
-    if plain.startswith("整个流程："):
-        return True
-    keyword_groups = (
-        ("不支持直接导入", "需要手动新建"),
-        ("复制保存到本地", "不要发到任何公开平台"),
-        ("不用时停止实例", "别留闲置资源"),
+    if not body.strip():
+        return label_html
+    body_html = (
+        '<p style="margin:0 0 1.1em;line-height:1.85;font-size:16px;color:#1f2937;">'
+        + markdown_inline_to_editor_html(body)
+        + "</p>"
     )
-    return any(all(keyword in plain for keyword in keywords) for keywords in keyword_groups)
+    return label_html + body_html
 
 
 def render_zsxq_quote_paragraph(text: str) -> str:
@@ -1866,11 +2007,11 @@ def render_zsxq_blocks(
             html_lines.append(render_zsxq_callout(text))
         elif IMAGE_CAPTION_RE.match(text):
             html_lines.append(render_editor_image_caption(text))
-        elif should_promote_zsxq_quote(text):
-            html_lines.append(render_zsxq_quote_paragraph(text))
         else:
-            for paragraph_text in split_zsxq_paragraph(text):
-                html_lines.append(f'<p style="{ZSXQ_PARAGRAPH_STYLE}">' + markdown_inline_to_editor_html(paragraph_text) + "</p>")
+            # Keep the author's paragraph intact — no keyword-based promotion to
+            # quotes and no sentence-splitting (both were overfit to one past
+            # article and surprised every other one).
+            html_lines.append(f'<p style="{ZSXQ_PARAGRAPH_STYLE}">' + markdown_inline_to_editor_html(text) + "</p>")
         ordered_number = 0
         paragraph.clear()
 
@@ -2279,7 +2420,7 @@ def markdown_for_platform(markdown: str, platform: str) -> str:
     text = re.sub(r"<\s*(script|style|iframe|object|embed)\b.*?</\s*\1\s*>", "", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"<section[^>]*>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"</section>", "", text, flags=re.IGNORECASE)
-    if platform in {"toutiao", "smzdm"}:
+    if platform in {"toutiao", "smzdm", "xueqiu", "baijiahao"}:
         text = re.sub(r"<span[^>]*>(.*?)</span>", r"\1", text, flags=re.IGNORECASE | re.DOTALL)
     return text.strip() + "\n"
 
@@ -2758,6 +2899,42 @@ def build_package(
 
     outputs.extend(platform_outputs)
 
+    # Zsxq (recommended): an import-ready Markdown file. Zsxq's long-article
+    # editor has a Markdown mode (Milkdown/ProseMirror) that parses pasted
+    # Markdown into NATIVE nodes — `>` becomes Zsxq's own blue quote card,
+    # `##` a native heading, `**` bold, `- ` a native list, and `| |` a native
+    # table. (We verified this live in the editor.) So instead of fighting the
+    # rich-text editor's HTML sanitizer with a `▍` text marker, we hand Zsxq the
+    # Markdown and let it render its own native styling. We reuse the pre-table
+    # snapshot (native `| |` tables kept; mermaid already rasterized to PNG,
+    # which Milkdown can't render) and rewrite asset paths for the platforms/
+    # subdir. Paste it in the editor's Markdown mode (or via publish-zsxq-article).
+    # Images become `[[IMG_N]]` text placeholders (with the asset path) rather
+    # than `![](localpath)` refs: Markdown mode can't load local paths and
+    # rejects data: URIs at publish, so images must be binary-pasted at their
+    # spot. The placeholder shows where each goes and which file to insert,
+    # paste-able as plain text. Asset paths stay publish-root-relative
+    # (`assets/...`) so they match the package layout you browse.
+    zsxq_md = placeholder_zsxq_images(zhihu_source_markdown)
+    if not zsxq_md.endswith("\n"):
+        zsxq_md += "\n"
+    write_text(output / "platforms" / "zsxq.md", zsxq_md)
+    outputs.append("platforms/zsxq.md")
+
+    # Juejin: a Markdown editor (Vditor) that takes full Markdown — native
+    # headings/bold/tables/code. Same shape as zsxq.md (native `| |` tables,
+    # mermaid as PNG, images as [[IMG_N]] placeholders to drag-upload in-editor).
+    juejin_md = placeholder_zsxq_images(zhihu_source_markdown)
+    if not juejin_md.endswith("\n"):
+        juejin_md += "\n"
+    write_text(output / "platforms" / "juejin.md", juejin_md)
+    outputs.append("platforms/juejin.md")
+
+    # Xiaohongshu: a plain-text note (no Markdown), ~1000-char cap, emoji +
+    # blank-line paragraphs, images uploaded manually in-app. Strip to plain text.
+    write_text(output / "platforms" / "xiaohongshu.md", render_xiaohongshu_note(zhihu_source_markdown, title))
+    outputs.append("platforms/xiaohongshu.md")
+
     # Zhihu: delegate to md2zhihu to produce an import-ready Markdown file with
     # native equation images, mermaid/graphviz figures and git-hosted images.
     zhihu_relative, zhihu_hosted, zhihu_warnings = build_zhihu_markdown(
@@ -2850,13 +3027,18 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--zhihu-asset-repo",
-        default=os.environ.get("ZHIHU_ASSET_REPO") or os.environ.get("MD2ZHIHU_ASSET_REPO"),
+        default=(
+            os.environ.get("ZHIHU_ASSET_REPO")
+            or os.environ.get("MD2ZHIHU_ASSET_REPO")
+            or DEFAULT_ZHIHU_ASSET_REPO
+        ),
         help=(
             "Git asset repo md2zhihu pushes Zhihu images to, e.g. "
             '"https://github.com/backtomyfuture/images.git" or '
             '"git@github.com:backtomyfuture/images.git". '
-            "Defaults to $ZHIHU_ASSET_REPO / $MD2ZHIHU_ASSET_REPO. "
-            "Without it, zhihu.md falls back to local ../assets/ links."
+            "Defaults to $ZHIHU_ASSET_REPO / $MD2ZHIHU_ASSET_REPO, then to the "
+            "built-in DEFAULT_ZHIHU_ASSET_REPO so Zhihu images are hosted by "
+            "default. Pass an empty string to force the local ../assets/ fallback."
         ),
     )
     parser.add_argument(
