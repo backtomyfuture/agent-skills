@@ -34,12 +34,13 @@ REMOTE_IMAGE_TIMEOUT_SECONDS = 30
 REMOTE_IMAGE_MAX_BYTES = 25 * 1024 * 1024
 REMOTE_IMAGE_USER_AGENT = "format-platform-article/1.0 (+https://factory.ai)"
 REMOTE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"}
-PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm")
-# Zhihu is intentionally NOT in RICH_HTML_PLATFORMS: it is produced as an
-# import-ready Markdown file (platforms/zhihu.md) by md2zhihu, not as
-# paste-ready HTML. Zsxq is also special-cased later because its editor handles
-# low-style native tags better than the shared magazine wrapper.
-RICH_HTML_PLATFORMS = ("toutiao", "zsxq", "smzdm")
+PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm", "xueqiu", "baijiahao", "juejin", "xiaohongshu")
+# Primary outputs: Zhihu/Juejin → import-ready Markdown (md2zhihu / Vditor),
+# Zsxq → Markdown (zsxq.md), Xiaohongshu → plain-text note. RICH_HTML_PLATFORMS
+# are the rich-text editors that share the conservative native HTML renderer:
+# Toutiao/SMZDM/Xueqiu/Baijiahao, plus Zsxq (whose zsxq.html is the rich-text
+# mode fallback alongside the recommended zsxq.md).
+RICH_HTML_PLATFORMS = ("toutiao", "zsxq", "smzdm", "xueqiu", "baijiahao")
 # Personal default Git image bed for Zhihu (md2zhihu pushes images here and
 # rewrites them to raw HTTPS URLs, so zhihu.md imports with working images out
 # of the box). Override per-run with --zhihu-asset-repo or $ZHIHU_ASSET_REPO.
@@ -135,6 +136,65 @@ PLATFORM_PROFILES: dict[str, dict[str, object]] = {
                 "url": "https://www.toutiao.com/zixun/7543077851290601518/",
             },
         ],
+    },
+    "xueqiu": {
+        "label": "雪球",
+        "recommended": "platforms/xueqiu.html",
+        "fallback": "assets/ + image-manifest.md",
+        "html_image_mode": "data",
+        "editor_model": "雪球「发长文」富文本编辑器（证券投资社区）。粘贴富文本，支持标题、加粗、引用、图片。",
+        "image_strategy": "复制 xueqiu.html 富文本结构，图片用 Base64 内嵌；大平台通常粘贴时自动上传，若被拒按 image-manifest.md 从 assets/ 补传。",
+        "code_strategy": "保留原生 pre/code；雪球读者偏投资，长代码尽量精简或转清单。",
+        "notes": [
+            "投资/财经选题最契合，引流到付费社群质量高；正文不带 H1，标题单独填。",
+            "默认采用与头条同款的原生渲染（未单独实测雪球编辑器，建议首次发布时核对图片与外链是否存活）。",
+        ],
+        "sources": [{"label": "雪球", "url": "https://xueqiu.com"}],
+    },
+    "baijiahao": {
+        "label": "百家号",
+        "recommended": "platforms/baijiahao.html",
+        "fallback": "assets/ + image-manifest.md",
+        "html_image_mode": "data",
+        "editor_model": "百度百家号图文富文本编辑器（类头条号），主要价值是蹭百度搜索 SEO 被动引流。",
+        "image_strategy": "复制 baijiahao.html 富文本结构，图片 Base64 内嵌；百家号粘贴时通常自动上传，否则按 image-manifest.md 补传。",
+        "code_strategy": "保留原生 pre/code。",
+        "notes": [
+            "正文不带 H1，标题单独填；站外链接多半会被限制，保留为文字。",
+            "默认与头条同款原生渲染（未单独实测，首次发布核对图片/外链）。",
+        ],
+        "sources": [{"label": "百家号", "url": "https://baijiahao.baidu.com"}],
+    },
+    "juejin": {
+        "label": "掘金",
+        "recommended": "platforms/juejin.md",
+        "fallback": "image-manifest.md",
+        "output_format": "markdown",
+        "html_image_mode": "markdown",
+        "editor_model": "掘金写文章用 Vditor Markdown 编辑器，直接吃 Markdown（标题/加粗/表格/代码块/公式），技术受众。",
+        "image_strategy": "juejin.md 里图片是 [[IMG_N]] 占位符并标注 assets/ 路径；粘贴 Markdown 后在掘金编辑器按占位符位置拖拽/粘贴图片上传到掘金图床。远程图片保留为 ![](url)。",
+        "code_strategy": "原生 Markdown 代码块 ```lang，掘金高亮友好，最适合带 API/Agent 等技术点的文章引流开发者。",
+        "notes": [
+            "标题单独填；juejin.md 只负责正文。",
+            "掘金支持原生表格/代码/公式，正文按 Markdown 直接粘贴即可。",
+        ],
+        "sources": [{"label": "掘金", "url": "https://juejin.cn"}],
+    },
+    "xiaohongshu": {
+        "label": "小红书",
+        "recommended": "platforms/xiaohongshu.md",
+        "fallback": "publish-xiaohongshu-article + image-manifest.md",
+        "output_format": "text",
+        "html_image_mode": "manual",
+        "editor_model": "小红书笔记：纯文本 + emoji + 空行分段，不支持 Markdown；正文上限约 1000 字，配图≤9 张（3:4），需封面图。",
+        "image_strategy": "图片需在 App/创作平台手工上传（≤9 张）；xiaohongshu.md 用 [[IMG_N]] 标注位置，配合 image-manifest.md，或直接用 publish-xiaohongshu-article 发布。",
+        "code_strategy": "无代码/表格概念；表格与代码已转成纯文本说明，复杂数据建议改成截图。",
+        "notes": [
+            "正文上限约 1000 字——长文必须精简成要点或拆成多条笔记，xiaohongshu.md 是去格式后的纯文本初稿，不要直接全量发。",
+            "已去掉 Markdown 语法、保留 emoji、用空行分段；首图与标题最关键。",
+            "实际发布建议用 publish-xiaohongshu-article skill。",
+        ],
+        "sources": [{"label": "小红书笔记排版规范", "url": "https://ostmcn.com/article-1185.html"}],
     },
 }
 CALLOUT_MARKERS = {
@@ -898,6 +958,77 @@ def placeholder_zsxq_images(markdown: str) -> str:
         return f"[[IMG_{counter['n']}]] 🖼 在此插入图片：{src}{suffix}"
 
     return IMAGE_RE.sub(repl, markdown)
+
+
+def render_xiaohongshu_note(markdown: str, title: str) -> str:
+    """Render a Xiaohongshu (小红书) plain-text note draft.
+
+    Xiaohongshu notes are plain text + emoji + blank-line paragraphs — no
+    Markdown, no headings/bold/tables as syntax, body capped around 1000 chars,
+    ≤9 images. So we strip all Markdown to plain text (keeping emoji), turn
+    headings/quotes/list items into plain lines, flatten tables to ` ｜ `-joined
+    rows, drop code fences/dividers, and replace images with `[[IMG_N]]` markers
+    (images are uploaded manually in-app, ≤9). The result is a starting draft —
+    almost always over the limit, so it carries a length hint to trim/split."""
+    lines = markdown.splitlines()
+    out: list[str] = []
+    img_n = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("```"):  # code fence: keep inner text, drop fences
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                out.append(lines[i].rstrip())
+                i += 1
+            i += 1
+            continue
+        m = IMAGE_RE.fullmatch(stripped)
+        if m:
+            img_n += 1
+            out.append(f"[[IMG_{img_n}]]（插图：{clean_image_target(m.group(2))}）")
+            i += 1
+            continue
+        if stripped.startswith("|") and stripped.endswith("|") and "|" in stripped[1:]:
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if set("".join(cells)) <= set("-: "):  # table separator row
+                i += 1
+                continue
+            out.append(" ｜ ".join(strip_inline_markdown(c) for c in cells if c.strip()))
+            i += 1
+            continue
+        if HR_RE.match(line):
+            i += 1
+            continue
+        heading = HEADING_RE.match(line)
+        if heading:
+            out.append(strip_inline_markdown(heading.group(2).strip()))
+            i += 1
+            continue
+        if stripped.startswith(">"):
+            out.append(strip_inline_markdown(re.sub(r"^>\s?", "", stripped)))
+            i += 1
+            continue
+        ul = UNORDERED_LIST_RE.match(line)
+        ol = ORDERED_LIST_RE.match(line)
+        if ul:
+            out.append("· " + strip_inline_markdown(ul.group(1).strip()))
+            i += 1
+            continue
+        if ol:
+            out.append("· " + strip_inline_markdown(ol.group(1).strip()))
+            i += 1
+            continue
+        out.append(strip_inline_markdown(line))
+        i += 1
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    char_count = len(re.sub(r"\s", "", body))
+    header = (
+        f"【提示·发布前删除本行】小红书正文上限约 1000 字，本文纯文本约 {char_count} 字"
+        "，超出请精简成要点或拆成多条笔记；配图≤9 张，首图与标题另选。"
+    )
+    return header + "\n\n" + body + "\n"
 
 
 def render_image_block(
@@ -1676,6 +1807,8 @@ PLATFORM_TITLE_SUFFIX = {
     "toutiao": "今日头条正文粘贴版",
     "zsxq": "知识星球长文粘贴版",
     "smzdm": "什么值得买正文粘贴版",
+    "xueqiu": "雪球长文粘贴版",
+    "baijiahao": "百家号正文粘贴版",
 }
 
 
@@ -2287,7 +2420,7 @@ def markdown_for_platform(markdown: str, platform: str) -> str:
     text = re.sub(r"<\s*(script|style|iframe|object|embed)\b.*?</\s*\1\s*>", "", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"<section[^>]*>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"</section>", "", text, flags=re.IGNORECASE)
-    if platform in {"toutiao", "smzdm"}:
+    if platform in {"toutiao", "smzdm", "xueqiu", "baijiahao"}:
         text = re.sub(r"<span[^>]*>(.*?)</span>", r"\1", text, flags=re.IGNORECASE | re.DOTALL)
     return text.strip() + "\n"
 
@@ -2787,6 +2920,20 @@ def build_package(
         zsxq_md += "\n"
     write_text(output / "platforms" / "zsxq.md", zsxq_md)
     outputs.append("platforms/zsxq.md")
+
+    # Juejin: a Markdown editor (Vditor) that takes full Markdown — native
+    # headings/bold/tables/code. Same shape as zsxq.md (native `| |` tables,
+    # mermaid as PNG, images as [[IMG_N]] placeholders to drag-upload in-editor).
+    juejin_md = placeholder_zsxq_images(zhihu_source_markdown)
+    if not juejin_md.endswith("\n"):
+        juejin_md += "\n"
+    write_text(output / "platforms" / "juejin.md", juejin_md)
+    outputs.append("platforms/juejin.md")
+
+    # Xiaohongshu: a plain-text note (no Markdown), ~1000-char cap, emoji +
+    # blank-line paragraphs, images uploaded manually in-app. Strip to plain text.
+    write_text(output / "platforms" / "xiaohongshu.md", render_xiaohongshu_note(zhihu_source_markdown, title))
+    outputs.append("platforms/xiaohongshu.md")
 
     # Zhihu: delegate to md2zhihu to produce an import-ready Markdown file with
     # native equation images, mermaid/graphviz figures and git-hosted images.

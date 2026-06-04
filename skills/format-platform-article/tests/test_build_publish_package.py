@@ -996,6 +996,12 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertTrue((output / "platforms" / "zsxq.md").exists())
             self.assertTrue((output / "platforms" / "zsxq.html").exists())
             self.assertTrue((output / "platforms" / "smzdm.html").exists())
+            # Xueqiu / Baijiahao: native rich-text HTML (like Toutiao).
+            self.assertTrue((output / "platforms" / "xueqiu.html").exists())
+            self.assertTrue((output / "platforms" / "baijiahao.html").exists())
+            # Juejin: full Markdown (Vditor editor). Xiaohongshu: plain-text note.
+            self.assertTrue((output / "platforms" / "juejin.md").exists())
+            self.assertTrue((output / "platforms" / "xiaohongshu.md").exists())
             self.assertTrue((output / "report.json").exists())
             self.assertTrue((output / "assets" / "sample.png").exists())
 
@@ -1100,6 +1106,29 @@ class BuildPublishPackageTests(unittest.TestCase):
             self.assertNotIn("](assets/sample.png)", zsxq_md)
             # ...but a remote image URL stays a normal ref (it loads in-editor).
             self.assertIn("![远程图片](https://example.com/remote.png)", zsxq_md)
+
+            # Xueqiu / Baijiahao share Toutiao's native renderer: native <h2>/
+            # <strong>/<blockquote>, Base64 images, no magazine <section> cards.
+            for plat, suffix in (("xueqiu", "雪球长文粘贴版"), ("baijiahao", "百家号正文粘贴版")):
+                h = (output / "platforms" / f"{plat}.html").read_text(encoding="utf-8")
+                self.assertIn(f"- {suffix}</title>", h)
+                self.assertIn("<h2>", h)
+                self.assertNotIn("<section", h)
+                self.assertIn("data:image/png;base64,", h)
+
+            # Juejin: full Markdown with [[IMG_N]] image placeholders.
+            juejin_md = (output / "platforms" / "juejin.md").read_text(encoding="utf-8")
+            self.assertIn("[[IMG_1]]", juejin_md)
+            self.assertNotIn("](assets/sample.png)", juejin_md)
+            self.assertNotIn("data:image/", juejin_md)
+
+            # Xiaohongshu: plain-text note — no Markdown syntax, emoji kept, a
+            # length hint, and image placeholders (uploaded manually in-app).
+            xhs = (output / "platforms" / "xiaohongshu.md").read_text(encoding="utf-8")
+            self.assertIn("小红书正文上限约 1000 字", xhs)
+            self.assertNotIn("**", xhs)
+            self.assertNotIn("](assets/", xhs)
+            self.assertIn("[[IMG_1]]", xhs)
 
             self.assertTrue(any(item["code"] == "remote_image" for item in report["warnings"]))
 
