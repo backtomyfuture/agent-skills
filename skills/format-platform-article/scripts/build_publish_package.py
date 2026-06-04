@@ -40,6 +40,10 @@ PLATFORMS = ("zhihu", "toutiao", "zsxq", "smzdm")
 # paste-ready HTML. Zsxq is also special-cased later because its editor handles
 # low-style native tags better than the shared magazine wrapper.
 RICH_HTML_PLATFORMS = ("toutiao", "zsxq", "smzdm")
+# Personal default Git image bed for Zhihu (md2zhihu pushes images here and
+# rewrites them to raw HTTPS URLs, so zhihu.md imports with working images out
+# of the box). Override per-run with --zhihu-asset-repo or $ZHIHU_ASSET_REPO.
+DEFAULT_ZHIHU_ASSET_REPO = "https://github.com/backtomyfuture/images.git"
 PLATFORM_PROFILES: dict[str, dict[str, object]] = {
     "zhihu": {
         "label": "知乎",
@@ -2876,13 +2880,18 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--zhihu-asset-repo",
-        default=os.environ.get("ZHIHU_ASSET_REPO") or os.environ.get("MD2ZHIHU_ASSET_REPO"),
+        default=(
+            os.environ.get("ZHIHU_ASSET_REPO")
+            or os.environ.get("MD2ZHIHU_ASSET_REPO")
+            or DEFAULT_ZHIHU_ASSET_REPO
+        ),
         help=(
             "Git asset repo md2zhihu pushes Zhihu images to, e.g. "
             '"https://github.com/backtomyfuture/images.git" or '
             '"git@github.com:backtomyfuture/images.git". '
-            "Defaults to $ZHIHU_ASSET_REPO / $MD2ZHIHU_ASSET_REPO. "
-            "Without it, zhihu.md falls back to local ../assets/ links."
+            "Defaults to $ZHIHU_ASSET_REPO / $MD2ZHIHU_ASSET_REPO, then to the "
+            "built-in DEFAULT_ZHIHU_ASSET_REPO so Zhihu images are hosted by "
+            "default. Pass an empty string to force the local ../assets/ fallback."
         ),
     )
     parser.add_argument(
