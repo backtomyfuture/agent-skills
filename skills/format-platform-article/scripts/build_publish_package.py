@@ -148,7 +148,8 @@ PLATFORM_PROFILES: dict[str, dict[str, object]] = {
         "notes": [
             "投资/财经选题最契合，引流到付费社群质量高；正文不带 H1，标题单独填。",
             "实测优势：站外链接可点（不像公众号/头条会被吞）——可在正文直接放公众号/星球链接做引流。",
-            "提示块/引用的引用框会被吞，但「emoji+加粗小标题+正文」内容完整保留，可读。",
+            "已针对雪球优化渲染：提示块用「emoji+加粗小标题：正文」段落、列表用「• 」真实项目符号、分割线用「● ● ●」文字（雪球会吞 blockquote/ul/hr）。",
+            "可手动加 $股票$ 标签和 #话题# 提升推荐与曝光。",
         ],
         "sources": [{"label": "雪球", "url": "https://xueqiu.com"}],
     },
@@ -1610,6 +1611,25 @@ def render_toutiao_quote_paragraph(text: str) -> str:
     return "<blockquote><p>" + markdown_inline_to_editor_html(text) + "</p></blockquote>"
 
 
+# --- Xueqiu (雪球) flavor -------------------------------------------------
+# 雪球's 发布长文 editor (ProseMirror) only keeps headings, bold, italic, links
+# (clickable!), images (auto-uploaded), and emoji — it strips <blockquote>,
+# <ul>, <hr> and code styling. So for 雪球 we render those as elements that DO
+# survive: callouts/quotes become bold-label paragraphs, list items get a real
+# "•" bullet, and dividers a "● ● ●" text line.
+def render_xueqiu_callout(text: str) -> str:
+    marker, label, body = parse_callout(text)
+    head = html.escape((marker + " " + label + "：").strip())
+    return f"<p><strong>{head}</strong>{markdown_inline_to_editor_html(body)}</p>"
+
+
+def render_xueqiu_quote_paragraph(text: str) -> str:
+    return "<p><em>" + markdown_inline_to_editor_html(text) + "</em></p>"
+
+
+XUEQIU_DIVIDER = '<p style="text-align:center;color:#9aa4b2;letter-spacing:6px;">● ● ●</p>'
+
+
 def toutiao_block_type(block: str) -> str:
     if block.startswith("<h2>"):
         return "h2"
@@ -1636,7 +1656,9 @@ def render_toutiao_blocks(
     markdown: str,
     image_mode: str = "placeholder",
     asset_base_dir: Path | None = None,
+    flavor: str = "native",
 ) -> str:
+    xueqiu = flavor == "xueqiu"
     lines = markdown.splitlines()
     html_lines: list[str] = []
     paragraph: list[str] = []
@@ -1654,7 +1676,7 @@ def render_toutiao_blocks(
             return
         text = " ".join(item.strip() for item in paragraph).strip()
         if any(text.startswith(marker) for marker in CALLOUT_MARKERS):
-            html_lines.append(render_toutiao_callout(text))
+            html_lines.append(render_xueqiu_callout(text) if xueqiu else render_toutiao_callout(text))
         elif IMAGE_CAPTION_RE.match(text):
             html_lines.append(render_editor_image_caption(text))
         else:
@@ -1671,7 +1693,9 @@ def render_toutiao_blocks(
             return
         text = " ".join(item.strip() for item in quote_lines).strip()
         if any(text.startswith(marker) for marker in CALLOUT_MARKERS):
-            html_lines.append(render_toutiao_callout(text))
+            html_lines.append(render_xueqiu_callout(text) if xueqiu else render_toutiao_callout(text))
+        elif xueqiu:
+            html_lines.append(render_xueqiu_quote_paragraph(text))
         else:
             html_lines.append(render_toutiao_quote_paragraph(text))
         ordered_number = 0
@@ -1685,6 +1709,12 @@ def render_toutiao_blocks(
             start = ordered_number + 1
             html_lines.append(render_toutiao_ordered_list(list_items, start))
             ordered_number += len(list_items)
+        elif xueqiu:
+            # 雪球 has no list element, so emit one "• …" paragraph per item —
+            # a real bullet glyph survives where <ul> would be flattened.
+            for item in list_items:
+                html_lines.append("<p>• " + markdown_inline_to_editor_html(item.strip()) + "</p>")
+            ordered_number = 0
         else:
             items = "".join("<li>" + markdown_inline_to_editor_html(item.strip()) + "</li>" for item in list_items)
             html_lines.append(f"<ul>{items}</ul>")
@@ -1735,6 +1765,9 @@ def render_toutiao_blocks(
             flush_list()
             flush_paragraph()
             flush_quote()
+            if xueqiu:
+                # 雪球 strips <hr>; without a visible mark sections run together.
+                html_lines.append(XUEQIU_DIVIDER)
             ordered_number = 0
             index += 1
             continue
@@ -1831,8 +1864,13 @@ def render_native_platform_html(
     for callouts and quotes, `<img>`, `<pre><code>` — so the semantics survive
     whatever the editor keeps. Callout labels become a bold "emoji 标签：" lead
     inside the blockquote rather than relying on a coloured card.
+
+    Xueqiu's editor is even more minimal (no list/quote/hr elements), so its
+    `flavor` emits bold-label callout paragraphs, `•` bullet paragraphs, and a
+    `● ● ●` text divider — using only the elements 雪球 keeps.
     """
-    body = render_toutiao_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir)
+    flavor = "xueqiu" if platform == "xueqiu" else "native"
+    body = render_toutiao_blocks(markdown, image_mode=image_mode, asset_base_dir=asset_base_dir, flavor=flavor)
     safe_title = html.escape(title)
     suffix = html.escape(
         PLATFORM_TITLE_SUFFIX.get(platform, str(PLATFORM_PROFILES[platform]["label"]))

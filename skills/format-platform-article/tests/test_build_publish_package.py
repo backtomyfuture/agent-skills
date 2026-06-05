@@ -537,6 +537,24 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertIn("server: ", rendered)
         self.assertNotIn("[SERVER-IP]", rendered)
 
+    def test_render_xueqiu_flavor_uses_only_supported_elements(self):
+        # 雪球's editor strips <blockquote>/<ul>/<hr>, so the xueqiu flavor emits
+        # bold-label callout paragraphs, "•" bullet paragraphs and a "● ● ●" text
+        # divider — never those elements.
+        rendered = build_publish_package.render_platform_html(
+            "xueqiu",
+            "标题",
+            "## 小节\n\n💡 **核心** 这是提示内容。\n\n- 第一点\n- 第二点\n\n---\n\n正文段落。",
+            image_mode="data",
+        )
+        self.assertIn("<title>标题 - 雪球长文粘贴版</title>", rendered)
+        self.assertNotIn("<blockquote", rendered)
+        self.assertNotIn("<ul>", rendered)
+        self.assertNotIn("<hr", rendered)
+        self.assertIn("● ● ●", rendered)
+        self.assertIn("<p>• 第一点</p>", rendered)
+        self.assertIn("<p><strong>💡 核心：</strong>这是提示内容。</p>", rendered)
+
     def test_render_platform_html_uses_native_layout(self):
         # Toutiao / SMZDM use conservative native markup (their editors strip the
         # magazine's decorative CSS). Headings are bare <h2>, quotes are native
