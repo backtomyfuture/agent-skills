@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import ssl
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,7 +21,7 @@ from typing import Any
 
 RANKINGS_URL = "https://openrouter.ai/rankings?view=week"
 MODELS_URL = "https://openrouter.ai/api/v1/models"
-MODEL_RANKINGS_ACTION_ID = "40824635c5eb77626bdf6795ffbf382c0862b321e1"
+MODEL_RANKINGS_ACTION_ID = "4079da55d542a3e5b83991498ac30792a092dc5d2e"
 MODEL_RANKINGS_ACTION_NAME = "getModelRankingsCached"
 NEXT_ROUTER_STATE_TREE = (
     "%5B%22%22%2C%7B%22children%22%3A%5B%22(home)%22%2C%7B%22children%22%3A%5B%22rankings%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C20%5D"
@@ -39,6 +41,39 @@ PRICING_KEYS = (
 
 USER_AGENT = "Mozilla/5.0 (compatible; openrouter-paid-ai-index/0.1)"
 
+NETWORK_RETRIES = 4
+NETWORK_RETRY_BACKOFF = 1.5
+
+
+RETRYABLE_HTTP_STATUS = frozenset({404, 409, 425, 429, 500, 502, 503, 504})
+
+
+def urlopen_retry(
+    request: urllib.request.Request,
+    timeout: int,
+    retry_statuses: frozenset[int] = frozenset(),
+) -> bytes:
+    """Read a request body, retrying transient TLS/connection drops.
+
+    ``retry_statuses`` opts specific HTTP error codes into retries. OpenRouter
+    redeploys often and serves Server Actions across instances, so a POST pinned
+    to one build's action id can transiently 404 until routing settles.
+    """
+    last_error: Exception | None = None
+    for attempt in range(NETWORK_RETRIES):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in retry_statuses:
+                raise
+        except (urllib.error.URLError, ssl.SSLError, OSError) as exc:
+            last_error = exc
+        if attempt < NETWORK_RETRIES - 1:
+            time.sleep(NETWORK_RETRY_BACKOFF * (attempt + 1))
+    raise last_error if last_error else RuntimeError("urlopen failed")
+
 
 @dataclass(frozen=True)
 class ModelMaps:
@@ -57,8 +92,7 @@ def fetch_text(url: str, timeout: int) -> str:
             "User-Agent": USER_AGENT,
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read().decode("utf-8")
+    return urlopen_retry(request, timeout).decode("utf-8")
 
 
 def fetch_json(url: str, timeout: int) -> dict[str, Any]:
@@ -69,8 +103,7 @@ def fetch_json(url: str, timeout: int) -> dict[str, Any]:
             "User-Agent": USER_AGENT,
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    return json.loads(urlopen_retry(request, timeout).decode("utf-8"))
 
 
 def load_text(path_or_url: str, timeout: int) -> str:
@@ -99,7 +132,7 @@ def absolute_url(base_url: str, src: str) -> str:
 def discover_model_rankings_action_id(html: str, page_url: str, timeout: int) -> str | None:
     scripts = sorted(set(re.findall(r'src="([^"]+\.js[^"]*)"', html)))
     pattern = re.compile(
-        r'createServerReference\("([0-9a-f]+)"[^)]*"' + re.escape(MODEL_RANKINGS_ACTION_NAME) + r'"\)'
+        r'"([0-9a-f]{16,})"[^)]*?"' + re.escape(MODEL_RANKINGS_ACTION_NAME) + r'"'
     )
     for src in scripts:
         full_url = absolute_url(page_url, src)
@@ -154,14 +187,11 @@ def fetch_ranking_data_via_action(url: str, timeout: int, action_id: str) -> lis
             "User-Agent": USER_AGENT,
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return parse_server_action_ranking_data(response.read().decode("utf-8"))
+    raw = urlopen_retry(request, timeout, retry_statuses=RETRYABLE_HTTP_STATUS)
+    return parse_server_action_ranking_data(raw.decode("utf-8"))
 
 
-def load_ranking_data(path_or_url: str, timeout: int) -> list[dict[str, Any]]:
-    if not path_or_url.startswith(("http://", "https://")):
-        return extract_ranking_data(load_text(path_or_url, timeout))
-
+def load_ranking_data_once(path_or_url: str, timeout: int) -> list[dict[str, Any]]:
     try:
         return fetch_ranking_data_via_action(path_or_url, timeout, MODEL_RANKINGS_ACTION_ID)
     except (OSError, urllib.error.URLError, ValueError):
@@ -170,6 +200,24 @@ def load_ranking_data(path_or_url: str, timeout: int) -> list[dict[str, Any]]:
         if action_id:
             return fetch_ranking_data_via_action(path_or_url, timeout, action_id)
         return extract_ranking_data(html)
+
+
+def load_ranking_data(path_or_url: str, timeout: int) -> list[dict[str, Any]]:
+    if not path_or_url.startswith(("http://", "https://")):
+        return extract_ranking_data(load_text(path_or_url, timeout))
+
+    # OpenRouter redeploys often; the action id is pinned to a build, so a POST can
+    # transiently 404 mid-rotation. Retry the whole resolve-and-fetch sequence so a
+    # fresh HTML fetch re-discovers the id once the deployment settles.
+    last_error: Exception | None = None
+    for attempt in range(NETWORK_RETRIES):
+        try:
+            return load_ranking_data_once(path_or_url, timeout)
+        except (OSError, urllib.error.URLError, ValueError) as exc:
+            last_error = exc
+            if attempt < NETWORK_RETRIES - 1:
+                time.sleep(NETWORK_RETRY_BACKOFF * (attempt + 1))
+    raise last_error if last_error else RuntimeError("could not load ranking data")
 
 
 def decode_next_flight_chunks(html: str) -> list[str]:

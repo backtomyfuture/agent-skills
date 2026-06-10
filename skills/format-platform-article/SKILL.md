@@ -49,7 +49,7 @@ python3 "$SKILL_DIR/scripts/build_publish_package.py" \
 5. In Zhihu's web editor open a new article, click the `···` / `导入` menu, and choose **导入文档** to import `platforms/zhihu.md` (or paste its Markdown if your account exposes the Markdown paste mode). The hosted HTTPS images render inline; the title field is separate.
 6. Check `report.json` for warnings (e.g. `md2zhihu_not_installed`, `zhihu_asset_repo_missing`, `zhihu_md2zhihu_failed`) before handing files to platform publishing skills. When md2zhihu or the repo is unavailable, `zhihu.md` falls back to local `../assets/` links and you upload images manually using `image-manifest.md`.
 
-To inspect a different platform first, pass `--open-target wechat|zhihu|toutiao|zsxq|smzdm`. Use `--no-open` to disable the auto-open behaviour entirely.
+To inspect a different platform first, pass `--open-target wechat|zhihu|toutiao|zsxq|smzdm|xueqiu|baijiahao|juejin|xiaohongshu`. Use `--no-open` to disable the auto-open behaviour entirely.
 
 ## Output
 
@@ -124,7 +124,7 @@ Do not expect legacy intermediate files such as `preview.html`, `copy.html`, `we
 - `--no-download-remote-images`: skip downloading remote (`http(s)`) Markdown images into `assets/`. By default the build fetches every remote URL (including Notion S3 presigned URLs that expire within an hour) so the cross-platform HTML files keep working after the original URL dies. Disable only if you know the remote URLs are stable and you want zero outbound traffic.
 - `--no-punct-normalize`: keep authored half-width punctuation. By default the build converts CJK-adjacent `,` `:` `;` `?` `!` to full-width `，：；？！` (skipping code, links, and digit groups).
 - `--open` (default) / `--no-open`: auto-open the chosen platform output in the system browser after build, so you can copy + paste directly.
-- `--open-target zhihu|wechat|toutiao|zsxq|smzdm`: which output to auto-open. Defaults to `zhihu`, which opens `platforms/zhihu.md` for import.
+- `--open-target zhihu|wechat|toutiao|zsxq|smzdm|xueqiu|baijiahao|juejin|xiaohongshu`: which output to auto-open. Defaults to `zhihu`, which opens `platforms/zhihu.md` for import. Markdown-first platforms (`zsxq`, `juejin`, `xiaohongshu`) open their `.md` file; the rest open the paste-ready HTML.
 
 ## Zhihu via md2zhihu
 
