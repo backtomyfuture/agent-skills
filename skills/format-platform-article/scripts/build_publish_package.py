@@ -199,6 +199,12 @@ PLATFORM_PROFILES: dict[str, dict[str, object]] = {
         "sources": [{"label": "小红书笔记排版规范", "url": "https://ostmcn.com/article-1185.html"}],
     },
 }
+# --open-target name -> file to open, derived from each platform's recommended
+# output so new platforms stay openable without touching a second table.
+OPEN_TARGET_FILES: dict[str, str] = {
+    "wechat": "wechat.html",
+    **{name: str(profile["recommended"]) for name, profile in PLATFORM_PROFILES.items()},
+}
 CALLOUT_MARKERS = {
     "📖": ("导读", "#fdf6ec", "#c2410c", "#7c2d12"),
     "⚠️": ("注意", "#fdf6ec", "#c2410c", "#7c2d12"),
@@ -3016,14 +3022,7 @@ def build_package(
     write_text(output / "report.json", json.dumps(report, ensure_ascii=False, indent=2) + "\n")
 
     if open_after_build:
-        target_map = {
-            "zhihu": "platforms/zhihu.md",
-            "wechat": "wechat.html",
-            "toutiao": "platforms/toutiao.html",
-            "zsxq": "platforms/zsxq.html",
-            "smzdm": "platforms/smzdm.html",
-        }
-        chosen_rel = target_map.get(open_target, "platforms/zhihu.md")
+        chosen_rel = OPEN_TARGET_FILES.get(open_target, "platforms/zhihu.md")
         chosen_path = output / chosen_rel
         if chosen_path.exists():
             _open_in_browser(chosen_path)
@@ -3109,7 +3108,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--open-target",
-        choices=["zhihu", "wechat", "toutiao", "zsxq", "smzdm"],
+        choices=sorted(OPEN_TARGET_FILES),
         default="zhihu",
         help="Which output to open after build (default: zhihu opens platforms/zhihu.md for import).",
     )

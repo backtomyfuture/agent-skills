@@ -1051,6 +1051,14 @@ class BuildPublishPackageTests(unittest.TestCase):
             # The Zhihu local-link fallback still ships the manual upload order.
             self.assertTrue((output / "image-manifest.md").exists())
 
+            # Every --open-target choice must map to a file this build produced,
+            # so newly added platforms stay openable.
+            for target, rel in build_publish_package.OPEN_TARGET_FILES.items():
+                self.assertTrue(
+                    (output / rel).exists(),
+                    f"--open-target {target} points at missing {rel}",
+                )
+
             report = json.loads((output / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["tables"]["kept"], 1)
             self.assertIn("wechat.html", report["outputs"])

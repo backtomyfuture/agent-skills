@@ -23,3 +23,5 @@ images/
 downloads/
 workspace/
 *-workspace/
+.pytest_cache/
+.notion-to-md/
