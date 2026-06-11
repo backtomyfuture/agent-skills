@@ -736,6 +736,39 @@ class BuildPublishPackageTests(unittest.TestCase):
         self.assertIn("&gt; **引用测试 G", rendered)
         self.assertIn("▍引用测试 I", rendered)
 
+    def test_unwrap_notion_quoted_tables_lifts_table_out_of_callout(self):
+        # Notion exports a callout containing a table as `> | ... |` rows.
+        # The label stays quoted; the table rows lose the `>` prefix so the
+        # normal table pipeline (PNG/native) sees them on every platform.
+        source = (
+            "> 📋 **中国模型速查表**\n"
+            "> | **模型** | **特点** |\n"
+            "> | --- | --- |\n"
+            "> | DeepSeek | 成本低 |\n"
+            "> \n"
+            ">\n"
+            "\n"
+            "正文继续。\n"
+        )
+        unwrapped = build_publish_package.unwrap_notion_quoted_tables(source)
+        lines = unwrapped.splitlines()
+        self.assertIn("> 📋 **中国模型速查表**", lines)
+        self.assertIn("| **模型** | **特点** |", lines)
+        self.assertIn("| DeepSeek | 成本低 |", lines)
+        # No quoted pipe rows survive, and the trailing empty quote is gone.
+        self.assertFalse(any(l.startswith("> |") for l in lines))
+        self.assertFalse(any(l.strip() == ">" for l in lines))
+        # An authored quote without a table is left alone.
+        plain = "> 普通引用，没有表格\n"
+        self.assertEqual(build_publish_package.unwrap_notion_quoted_tables(plain), plain)
+
+    def test_native_flavor_renders_dividers_as_visible_characters(self):
+        # Toutiao/SMZDM/Baijiahao share the native renderer; a Markdown `---`
+        # must leave a visible pause mark, not silently vanish.
+        rendered = build_publish_package.render_toutiao_blocks("上一节。\n\n---\n\n下一节。")
+        self.assertIn("● ● ●", rendered)
+        self.assertNotIn("<hr", rendered)
+
     def test_render_toutiao_html_uses_body_only_paste_safe_markup(self):
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         rendered = build_publish_package.render_platform_html(
@@ -1253,8 +1286,9 @@ class BuildPublishPackageTests(unittest.TestCase):
         # Half-width punctuation inside Chinese prose becomes full-width.
         self.assertEqual(n("还稳不稳,别只盯"), "还稳不稳，别只盯")
         self.assertEqual(n("开篇:AI 涨成这样,还能看懂吗?"), "开篇：AI 涨成这样，还能看懂吗？")
-        # Sees through emphasis markers + spaces: "...回报** :" -> full-width.
-        self.assertEqual(n("有回报** :下面"), "有回报** ：下面")
+        # Sees through emphasis markers + spaces: "...回报** :" -> full-width,
+        # and the stray space before the colon is dropped with it.
+        self.assertEqual(n("有回报** :下面"), "有回报**：下面")
         # Digit groups, inline code, and link targets are left untouched.
         self.assertEqual(n("约 3,800 亿"), "约 3,800 亿")
         self.assertEqual(n("`a,b:c` 普通,文本"), "`a,b:c` 普通，文本")
@@ -1264,6 +1298,22 @@ class BuildPublishPackageTests(unittest.TestCase):
         )
         # Pure ASCII context stays half-width.
         self.assertEqual(n("GPT-4,Claude: hi"), "GPT-4,Claude: hi")
+
+    def test_normalize_cleans_notion_bold_spacing_artifacts(self):
+        n = build_publish_package.normalize_cjk_punctuation
+        # Notion exports bold spans padded with spaces. Double gaps collapse,
+        # spaces hugging full-width punctuation vanish, and a space between
+        # two CJK chars (seen through ** markers) is dropped.
+        self.assertEqual(
+            n("约  **9 亿** ，已有  **220 多款应用** 接入"),
+            "约 **9 亿**，已有 **220 多款应用**接入",
+        )
+        self.assertEqual(n("把  **2026 年 6 月** 时点"), "把 **2026 年 6 月**时点")
+        # Pangu spacing between CJK and Latin/digits is deliberate and stays.
+        self.assertEqual(n("长 PDF、视频分析"), "长 PDF、视频分析")
+        self.assertEqual(n("提升在 **Agent 能力** ：接到"), "提升在 **Agent 能力**：接到")
+        # Code spans keep their internal spacing untouched.
+        self.assertEqual(n("用 `a  b` 命令 执行"), "用 `a  b` 命令执行")
 
     def test_punct_normalization_default_on_and_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:
