@@ -217,6 +217,7 @@ CALLOUT_MARKERS = {
     "🔥": ("热门", "#fdf6ec", "#c2410c", "#7c2d12"),
     "🚀": ("推荐", "#fdf6ec", "#c2410c", "#7c2d12"),
     "📌": ("置顶", "#fdf6ec", "#c2410c", "#7c2d12"),
+    "📋": ("清单", "#fdf6ec", "#c2410c", "#7c2d12"),
     "📣": ("通知", "#fdf6ec", "#c2410c", "#7c2d12"),
     "❤️": ("推荐", "#fdf6ec", "#c2410c", "#7c2d12"),
     "🧰": ("工具", "#fdf6ec", "#c2410c", "#7c2d12"),
@@ -492,6 +493,46 @@ def normalize_notion_quote_callouts(markdown: str) -> str:
     return pattern.sub(r"\1\2 ", markdown)
 
 
+_QUOTED_TABLE_ROW = re.compile(r"^\s{0,3}>\s*(\|.*\|)\s*$")
+_EMPTY_QUOTE_LINE = re.compile(r"^\s{0,3}>\s*$")
+
+
+def unwrap_notion_quoted_tables(markdown: str) -> str:
+    """Lift Markdown tables out of blockquotes.
+
+    Notion exports a callout that contains a table as a quote block whose
+    every row is prefixed with `> `. No platform treats a quoted table as a
+    table — the rows flatten into one paragraph of literal `|` characters —
+    and the author's intent was a callout label *plus* a table, not a quoted
+    table. Splitting the table out of the quote restores the normal table
+    pipeline everywhere (PNG conversion, native tables, md2zhihu).
+    """
+    lines = markdown.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        row = _QUOTED_TABLE_ROW.match(lines[i])
+        next_row = _QUOTED_TABLE_ROW.match(lines[i + 1]) if i + 1 < len(lines) else None
+        if row and next_row and TABLE_SEPARATOR_RE.match(next_row.group(1)):
+            if out and out[-1].strip():
+                out.append("")  # close the surrounding quote
+            while i < len(lines):
+                row = _QUOTED_TABLE_ROW.match(lines[i])
+                if not row:
+                    break
+                out.append(row.group(1))
+                i += 1
+            # Swallow the empty `> ` lines Notion leaves after the table so
+            # they don't become a stray empty quote card.
+            while i < len(lines) and _EMPTY_QUOTE_LINE.match(lines[i]):
+                i += 1
+            out.append("")
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out) + ("\n" if markdown.endswith("\n") else "")
+
+
 # Han ideographs (incl. Ext-A) plus the full-width punctuation we ourselves emit,
 # so a run like "结论，判断" still counts the comma's neighbours as CJK.
 _CJK_CHAR = re.compile(r"[㐀-鿿豈-﫿，。：；？！、「」『』（）《》—…]")
@@ -510,6 +551,9 @@ def normalize_cjk_punctuation(markdown: str) -> str:
     full-width, so we normalise — but only when a CJK character is adjacent, and
     never inside code, links, or digit groups like 3,800. Code spans and URLs are
     stashed out first so their punctuation is never touched.
+
+    Also cleans up the stray spaces Notion leaves around bold spans (see the
+    inline comment below) so "约  **9 亿** ，已有" reads as "约 **9 亿**，已有".
     """
     stash: list[str] = []
 
@@ -550,6 +594,21 @@ def normalize_cjk_punctuation(markdown: str) -> str:
         if _is_cjk(_nearest(i, -1)) or _is_cjk(_nearest(i, 1)):
             chars[i] = full
     text = "".join(chars)
+
+    # Notion wraps bold spans in stray spaces ("约  **9 亿** ，已有"), which
+    # survive into every platform output as double gaps and spaces hugging
+    # full-width punctuation. Collapse interior space runs, drop spaces before
+    # full-width punctuation, and drop a space sitting between two CJK chars —
+    # seeing through ** markers like the conversion above. Spaces between CJK
+    # and Latin/digits stay: that pangu spacing is deliberate.
+    cjk = _CJK_CHAR.pattern
+    text = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", text)
+    text = re.sub(r"[ \t]+(?=(?:\*\*)?[，。：；？！、）》」』])", "", text)
+    text = re.sub(
+        rf"({cjk})(\*\*)?[ \t]+(\*\*)?(?={cjk})",
+        lambda m: m.group(1) + (m.group(2) or "") + (m.group(3) or ""),
+        text,
+    )
 
     return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
 
@@ -1771,9 +1830,12 @@ def render_toutiao_blocks(
             flush_list()
             flush_paragraph()
             flush_quote()
-            if xueqiu:
-                # 雪球 strips <hr>; without a visible mark sections run together.
-                html_lines.append(XUEQIU_DIVIDER)
+            # No native flavor can rely on <hr>: 雪球 strips it outright, and
+            # the other editors treat a pasted empty rule inconsistently. Use
+            # the character divider everywhere — even with its style stripped
+            # it leaves a visible "● ● ●" pause instead of running sections
+            # together.
+            html_lines.append(XUEQIU_DIVIDER)
             ordered_number = 0
             index += 1
             continue
@@ -2881,6 +2943,7 @@ def build_package(
         remote_downloader=remote_downloader,
     )
     normalized = normalize_notion_quote_callouts(normalized)
+    normalized = unwrap_notion_quoted_tables(normalized)
     if normalize_punctuation:
         normalized = normalize_cjk_punctuation(normalized)
     warnings.extend(image_warnings)
