@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Submit the leave application and verify it actually reached the server.
-# This is the irreversible step — only run it after the filled form has been
-# visually confirmed.
+# Run it after fill_form.sh + a screenshot sanity check. A submitted 公文 can
+# be 撤回 from the 公文跟踪 page, so submitting by default is low-risk — the
+# guards below are about never *mis-reporting* a submit, not about asking
+# permission.
 #
 # The 提交 <button> carries onclick="checkFormMain()". A CDP/ref click does NOT
 # reliably fire that handler (same gotcha as the 固化流程 button), so we invoke
