@@ -63,6 +63,17 @@ fi
 ab tab "$POPUP_ID" >/dev/null 2>&1 || true
 ab wait --load networkidle >/dev/null 2>&1 || true
 
+# The popup lives on oa3.hnair.net behind its own SSO. If the SSO master
+# session idle-expired since launch.sh ran, the popup bounces to the login
+# page — fail loudly so the caller re-runs launch.sh (which handles login).
+POPUP_URL="$(ab get url 2>/dev/null || echo '')"
+case "$POPUP_URL" in
+  *login.hnagroup.com*|*ssocallback*)
+    echo "ERROR: SSO_EXPIRED — 固化流程 popup bounced to the SSO login page; re-run launch.sh and log in" >&2
+    exit 12
+    ;;
+esac
+
 # The flow list is populated by AJAX after load, so poll until the 年休假流程
 # row actually exists before tagging it.
 found=""
