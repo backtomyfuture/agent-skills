@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Submit the leave application and verify it actually reached the server.
-# Run it after fill_form.sh + a screenshot sanity check. A submitted 公文 can
-# be 撤回 from the 公文跟踪 page, so submitting by default is low-risk — the
-# guards below are about never *mis-reporting* a submit, not about asking
-# permission.
+# Run it after fill_form.sh + a screenshot sanity check. Submission must be
+# explicitly requested by the user; the guards below prevent double firing and
+# false success reports, but do not replace that authorization.
 #
 # The 提交 <button> carries onclick="checkFormMain()". A CDP/ref click does NOT
 # reliably fire that handler (same gotcha as the 固化流程 button), so we invoke
@@ -12,13 +11,36 @@
 # (action=savemyapply) and, on success, shows "提交成功…" and redirects to the
 # 公文跟踪 page.
 #
-# We confirm success by watching for that navigation / success toast AND by
-# checking the network log for the savemyapply POST — so we never report a
-# submit that didn't happen, and never fire twice.
+# We confirm success from at least one live proof: the savemyapply POST, the
+# success toast, or the expected navigation. Network logs can be tab-scoped and
+# may no longer be visible after a redirect, so a later empty log is not proof
+# that the submission failed.
 set -euo pipefail
 
 PORT="${HNA_CDP_PORT:-9222}"
 ab() { agent-browser --cdp "${PORT}" "$@"; }
+
+# agent-browser acts on the active tab. Never invoke checkFormMain() from an
+# unrelated oa3 page such as 公文跟踪: locate and activate the actual HR form
+# first, otherwise a pre-existing tracking URL could be mistaken for a success
+# redirect.
+FORM_ID="$(ab tab 2>/dev/null | grep LeaveApplicationLink | grep -oE '\bt[0-9]+\b' | head -1 || true)"
+if [ -z "$FORM_ID" ]; then
+  echo "ERROR: leave-application form tab not found; run fill_form.sh first" >&2
+  exit 1
+fi
+if ! ab tab "$FORM_ID" >/dev/null 2>&1; then
+  echo "ERROR: could not activate the leave-application form tab" >&2
+  exit 1
+fi
+FORM_URL="$(ab get url 2>/dev/null || echo '')"
+case "$FORM_URL" in
+  *LeaveApplicationLink.aspx*) ;;
+  *)
+    echo "ERROR: active tab is not the leave-application form: $FORM_URL" >&2
+    exit 1
+    ;;
+esac
 
 # Clear any stale layer toast left over from a previous attempt.
 ab eval "if(typeof layer!=='undefined'&&layer.closeAll){layer.closeAll();}'cleared'" >/dev/null 2>&1 || true
@@ -29,14 +51,10 @@ if ab network requests 2>/dev/null | grep -q "savemyapply"; then
   exit 3
 fi
 
-# Validate first; checkForm() returns false (and toasts) if something's missing.
-VALID="$(ab eval "typeof checkForm==='function' ? String(checkForm()) : 'nofunc'" 2>/dev/null | tr -d '"')"
-if [ "$VALID" != "true" ]; then
-  echo "ERROR: form validation (checkForm) did not pass: $VALID" >&2
-  exit 1
-fi
-
-# Fire the real submit.
+# Do not call checkForm() as a standalone preview. On the current portal it
+# shows a submission-style overlay, and checkFormMain() already invokes the
+# same validation immediately before its one real POST.
+# Fire the real submit exactly once.
 ab eval "checkFormMain(); 'submitting'" >/dev/null 2>&1 || true
 
 # Wait for proof of success: either the savemyapply POST appears, the page
