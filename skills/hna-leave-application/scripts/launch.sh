@@ -6,19 +6,20 @@
 #     got respawned headless. Launching Chrome ourselves on a fixed CDP port and
 #     attaching with `--cdp` sidesteps both problems and is reliable.
 #
-# Headless by default: the whole flow is driven via CDP + in-page JS, which
-# behaves identically under --headless=new, and with no visible window there is
-# nothing for the user to accidentally close or lose. The ONE thing that needs
-# a visible window is manual SSO login — so when we detect NOT_LOGGED_IN from a
-# headless instance, we swap it for a headed one parked on the login page.
-# Set HNA_HEADED=1 to force a visible window for the whole run (debugging).
+# Strict browser-mode policy: every normal automation step is headless. The
+# only exception is manual SSO login. When a login is needed, we swap the
+# headless instance for a headed one parked on the login page. Once the user
+# logs in, the script saves that fresh state, restarts Chrome headless, and
+# verifies the session again before reporting READY.
 #
 # Login persistence: the HNA SSO cookies are *session* cookies, so the Chrome
 # profile dir alone forgets the login whenever Chrome exits. We therefore keep
 # a state.json (cookies + storage, saved via `agent-browser state save`) inside
-# the hna profile: load it before navigating, and re-save it on every
-# successful logged-in run. After a manual login, just re-run this script —
-# it will land on the form and capture the fresh state automatically.
+# the hna profile: load it into a headless session before navigating, then
+# re-save it on every successful logged-in run. After a manual login, just
+# re-run this script —
+# it captures the fresh state, switches back to headless Chrome, and then
+# verifies that the restored headless session can reach the form and oa3.
 #
 # Exit codes:
 #   0  = logged in, parked on the leave-application form (state.json refreshed)
@@ -36,9 +37,6 @@ TARGET="http://hr.hna.net/ehr/NewHomePage/EmployeeBenefits/LeaveApplicationLink.
 # idle-expired — so reaching the form is NOT enough; we probe oa3 explicitly.
 OA3_PROBE="http://oa3.hnair.net/OAWebApp/OA/Workflow/Process/MyFlow.aspx?Advice=2"
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-
-MODE="headless"
-[ "${HNA_HEADED:-0}" = "1" ] && MODE="headed"
 
 # launch_chrome <headless|headed> [url] — kill any instance on our port and
 # start fresh, opening the given URL (default: the leave form).
@@ -68,17 +66,34 @@ launch_chrome() {
   exit 1
 }
 
-# Reuse an existing CDP session if one is already up (whatever mode it's in —
-# e.g. the headed window the user just logged in through), otherwise launch.
-if ! curl -s "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
-  launch_chrome "$MODE"
+# A headed CDP session can exist only while the user is completing manual SSO.
+# Every ordinary launch starts headless. If this invocation finds the headed
+# post-login window, it deliberately avoids loading an old saved state over the
+# new cookies; after verification it converts the session back to headless.
+cdp_available() {
+  curl -s "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1
+}
+
+is_headless() {
+  curl -s "http://127.0.0.1:${PORT}/json/version" | grep -q "HeadlessChrome"
+}
+
+if ! cdp_available; then
+  launch_chrome headless
+fi
+
+if is_headless; then
+  BROWSER_MODE="headless"
+else
+  BROWSER_MODE="headed"
 fi
 
 ab() { agent-browser --cdp "${PORT}" "$@"; }
 
-# Re-inject the saved login cookies before navigating, so an expired
-# in-browser session still auto-logs-in from the last saved state.
-if [ -f "$STATE" ]; then
+# Re-inject saved cookies only into a headless session. A headed session is the
+# manual-login recovery window and its fresh cookies must never be overwritten
+# by a stale state.json from a previous run.
+if [ "$BROWSER_MODE" = "headless" ] && [ -f "$STATE" ]; then
   ab state load "$STATE" >/dev/null 2>&1 || true
 fi
 
@@ -110,6 +125,16 @@ for _ in $(seq 1 15); do
           # hr.hna.net's cookies open the form), then park back on the form.
           ab tab close >/dev/null 2>&1 || true
           { [ -n "$MAIN_ID" ] && ab tab "$MAIN_ID" >/dev/null 2>&1; } || true
+          if [ "$BROWSER_MODE" = "headed" ]; then
+            # The user has just completed manual login. Saving must succeed
+            # before we close their visible window and restart headless.
+            if ! ab state save "$STATE" >/dev/null 2>&1; then
+              echo "ERROR: Could not save the fresh SSO state" >&2
+              exit 1
+            fi
+            launch_chrome headless "$TARGET"
+            exec bash "$0"
+          fi
           ab state save "$STATE" >/dev/null 2>&1 || true
           echo "READY"
           exit 0
@@ -118,7 +143,7 @@ for _ in $(seq 1 15); do
           # SSO master session expired: the user must log in by hand, which
           # needs a visible window parked on the SSO login page (the probe URL
           # bounces there). After they log in, re-run this script.
-          if curl -s "http://127.0.0.1:${PORT}/json/version" | grep -q "HeadlessChrome"; then
+          if is_headless; then
             launch_chrome headed "$OA3_PROBE"
           fi
           echo "NOT_LOGGED_IN"
@@ -145,7 +170,7 @@ case "$URL" in
     # Headless detection: ask the browser itself — a headless instance reports
     # "HeadlessChrome" in CDP /json/version (ps-grepping for --headless is
     # fragile: helper processes and the grep pipeline itself self-match).
-    if curl -s "http://127.0.0.1:${PORT}/json/version" | grep -q "HeadlessChrome"; then
+    if is_headless; then
       launch_chrome headed
     fi
     echo "NOT_LOGGED_IN"

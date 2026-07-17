@@ -11,11 +11,12 @@ description: >-
   approval reply, e.g. 同意呈报). The leave details (dates, days, 年休假 vs 补休)
   are extracted from that same PDF — always from the NEWEST/topmost request in
   it, since the thread contains older ones — and the PDF doubles as the form
-  attachment. It drives a headless
-  Chrome via agent-browser using the saved `hna` profile (login state persisted
-  via state.json; a visible window pops up only when manual SSO login is
-  needed), selects the 固化流程, fills dates/type/reason/handover/请示意见,
-  attaches the approval PDF, self-checks a screenshot, and submits after the user
+  attachment. It drives Chrome headlessly via agent-browser using the saved
+  `hna` profile (login state persisted via state.json). A visible window is
+  allowed only for the user's manual SSO login; launch, form filling, internal
+  screenshot checking, submission, and result verification remain headless. It
+  selects the 固化流程, fills dates/type/reason/handover/请示意见, attaches the
+  approval PDF, self-checks a screenshot, and submits after the user
   explicitly requests it. Trigger even
   if the user doesn't name the system explicitly — any HNA leave-filing request
   applies.
@@ -114,17 +115,19 @@ that WILL bite if skipped:
 bash scripts/launch.sh
 ```
 
-Chrome runs **headless by default** (`--headless=new`; the whole flow is CDP +
-in-page JS, which behaves identically headless, and with no window there is
-nothing to accidentally close). Set `HNA_HEADED=1` to watch it work. The one
-thing that needs a visible window is manual SSO login — `launch.sh` swaps in a
-headed window automatically when that's needed.
+Chrome runs **strictly headless for the normal workflow** (`--headless=new`):
+launch, login-state restoration, form filling, screenshot self-check,
+submission, and result verification all use the headless CDP session. There is
+no normal-flow headed override. The sole exception is a manual SSO login:
+`launch.sh` opens a headed login window only after it detects `NOT_LOGGED_IN`.
 
 Login state lives in the `hna` profile as `~/.agent-browser/profiles/hna/state.json`
 (saved with `agent-browser state save`). The HNA SSO cookies are session cookies,
 so the Chrome profile dir alone forgets them when Chrome exits — `launch.sh`
-loads `state.json` before navigating and re-saves it on every logged-in run, so
-the login carries over between runs automatically.
+loads `state.json` only into a headless session before navigating and re-saves
+it on every logged-in run. After a manual login, it saves the fresh state,
+closes the headed window, restarts headless Chrome, and re-verifies both SSO
+checks before it emits `READY`.
 
 `READY` means two things were verified, not one: the hr.hna.net form is open,
 AND an oa3.hnair.net SSO probe passed. The 固化流程 picker lives on
@@ -138,16 +141,20 @@ failing mid-fill.
 - Exit `10` / `NOT_LOGGED_IN` → login/SSO expired. **Stop and tell the user to
   log in.** `launch.sh` has already replaced the headless instance with a
   visible window parked on the 统一登录平台 login page. Ask them to enter their
-  domain account + password there, then re-run `launch.sh` — it reuses that
-  window, verifies both checks, and saves the fresh state back into the
-  profile. (A background poll for the post-login URL + auto re-run of
-  `launch.sh` saves the user a round-trip.)
+  domain account + password there, then re-run `launch.sh`. On success it saves
+  the new state, closes that headed window, restarts headless Chrome, verifies
+  the form plus oa3 SSO again, and only then returns `READY`. Do not fill or
+  submit while the visible login window is open.
 - Exit `11` / `UNKNOWN` → report the URL and ask how to proceed.
 
 If anything looks stuck or crashed, just re-run `launch.sh`; it kills stale
 instances on the port and relaunches.
 
 ### 2. Fill the form
+
+当用户已经明确要求“呈报”或“提交”时，必须实际连续执行本节、无头截图自检和提交，
+不要仅展示命令、不要因正常页面核验而等待用户逐页确认。只有用户明确只要求填写或
+预览时，才停在未提交状态。
 
 Export the derived values and run the fill script (it does NOT submit):
 
@@ -177,9 +184,12 @@ the login, then retry the fill.
 agent-browser --cdp 9222 screenshot --full /tmp/hna-filled.png
 ```
 
-Read the screenshot and check: 固化流程 approval chain present, dates + 可休假 N天,
-类型, 休假原因/工作交接情况 (with the trailing 。), 请示意见 text, and the attachment
-row (中心经理审批邮件.pdf). 如果页面内容与请求完全一致、且用户已经明确要求呈报，才继续提交；否则停在已填写状态并说明差异。撤回能力不替代用户的提交授权。
+Read the screenshot internally and check: 固化流程 approval chain present, dates +
+可休假 N天, 类型, 休假原因/工作交接情况 (with the trailing 。), 请示意见 text, and the
+attachment row (中心经理审批邮件.pdf). 截图是无头会话内的 agent 自检，不打开有头
+窗口，也不要求用户逐字段确认。页面内容与请求一致且用户已明确要求呈报时，立即继续
+提交；有差异或用户仅要求预览时，才停在已填写状态并说明原因。撤回能力不替代用户的
+提交授权。
 
 > Note: the second approver in the 固化流程 chain is auto-assigned and can vary
 > between runs (e.g. 杨帆43 vs 邵彬2). Glance at it, but it's expected to change.
@@ -190,7 +200,10 @@ row (中心经理审批邮件.pdf). 如果页面内容与请求完全一致、�
 bash scripts/submit.sh           # prints SUBMITTED (...) on success
 ```
 
-`submit.sh` 输出 `SUBMITTED (post|toast|nav)` 后即已获得成功证据。门户会自动跳转至公文跟踪页，列表出现新 HRM 休假申请行可作为补充确认；跳转后网络日志可能按标签页重置为空，不能据此判断提交失败。
+`submit.sh` 输出 `SUBMITTED (post|toast|nav)` 后即已获得成功证据。应直接向用户
+返回该提交结果；不要为了额外确认而主动打开或浏览公文跟踪页。门户如自动跳转至
+公文跟踪页，属于提交后的系统行为，可作为补充证据；跳转后网络日志可能按标签页重置
+为空，不能据此判断提交失败。
 
 若已知有同日期、同内容的旧公文而用户未明确要求重新呈报，应先说明风险并询问；不能用公文跟踪“无搜索结果”推断旧公文不存在。用户明确要求重新呈报时，可以创建新公文，但不得擅自撤回旧公文。
 
@@ -204,18 +217,23 @@ These were learned by live-driving the page; keep them in mind before editing.
   manual launch + `--cdp 9222` is reliable. `launch.sh` handles this.
 - **The SSO login cookies are session cookies.** The Chrome profile dir alone
   does NOT keep you logged in across Chrome restarts. `launch.sh` persists the
-  login by `state load`-ing `profiles/hna/state.json` before navigating and
-  `state save`-ing it again on every logged-in run.
+  login by loading `profiles/hna/state.json` only into a headless session
+  before navigating, then saving it again on every logged-in run. A fresh
+  manual-login state is saved before the temporary headed window is closed
+  and the workflow is restarted headless.
 - **"Form opens" ≠ "fully logged in".** The 固化流程 picker is on oa3.hnair.net
   behind the login.hnagroup.com SSO master session (`IAM_SESSION`), which
   idle-expires in ~30 min — long before hr.hna.net's own app cookies stop
   opening the form. That's why `launch.sh` probes oa3 before reporting READY,
   and why the state it saves includes oa3's own session cookies too.
-- **Headless works for everything except manual login.** `--headless=new`
-  drives window.open popups, confirm() dialogs, and hidden-input uploads
-  identically to headed (verified live). To detect whether a running instance
-  is headless, check CDP `/json/version` for `HeadlessChrome` — ps-grepping for
-  `--headless` is fragile (the grep pipeline self-matches).
+- **Headless is mandatory for every normal step; manual login is the sole
+  exception.** `--headless=new` drives window.open popups, confirm() dialogs,
+  and hidden-input uploads identically to headed (verified live). On an expired
+  SSO session, `launch.sh` temporarily opens a headed login window; after the
+  user logs in and the form + oa3 probe pass, it saves the new state, restarts
+  headless, and checks again before `READY`. To detect a headless instance,
+  check CDP `/json/version` for `HeadlessChrome` — ps-grepping for `--headless`
+  is fragile (the grep pipeline self-matches).
 - **`--disable-popup-blocking` is mandatory** (set in `launch.sh`). The 固化流程
   button opens its picker via `window.open()`.
 - **Buttons with JS handlers must be clicked via page-context `.click()`, not
@@ -248,8 +266,9 @@ These were learned by live-driving the page; keep them in mind before editing.
 
 ## Files
 
-- `scripts/launch.sh` — launch headless Chrome (hna profile, CDP 9222), restore
-  saved login state, verify form + oa3 SSO, re-save state; swaps in a headed
-  window when manual login is needed. `HNA_HEADED=1` forces headed.
+- `scripts/launch.sh` — launch and verify headless Chrome (hna profile, CDP
+  9222), restore/save login state, and verify form + oa3 SSO. It opens a
+  headed window only for manual SSO login, then saves the new state and
+  restarts headless before returning `READY`; `HNA_HEADED` is not supported.
 - `scripts/fill_form.sh` — 标准请示模板、流程选择、附件可见性校验与字段填写；不提交。
 - `scripts/submit.sh` — 先锁定休假表单，再调用 `checkFormMain()`；验证成功并防止同一会话重复提交。
