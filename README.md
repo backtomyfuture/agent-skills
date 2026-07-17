@@ -11,6 +11,7 @@ Each directory under `skills/` is a standalone skill:
 - `bark-notify` - send Bark push notifications.
 - `exchange-cli` - operate Exchange/Outlook mail, calendar, tasks, and contacts.
 - `format-platform-article` - format local Markdown/media into a WeChat-first multi-platform publish package.
+- `hna-leave-application` - submit leave applications (休假呈报) on the HNA internal HR portal.
 - `lark-minutes-base-sync` - sync owned Feishu Minutes into a Base inbox.
 - `markdown-table-images` - render publication-risky Markdown tables as PNG images.
 - `monthly-attendance` - fill monthly attendance spreadsheets from OA, Notion, and leave records.
@@ -21,6 +22,8 @@ Each directory under `skills/` is a standalone skill:
 - `publish-mdnice-article` - import Markdown/Notion articles into Markdown Nice drafts.
 - `publish-xiaohongshu-article` - stage Markdown/Notion articles for Xiaohongshu.
 - `publish-zsxq-article` - publish or schedule Markdown/Notion articles to Zsxq.
+- `report-to-email` - turn work reports (PPTX/PDF/Word/text) into branded Outlook-ready HTML email.
+- `toutiao-content-pipeline` - collect and verify sources, then draft and stage Toutiao articles/micro-posts.
 - `wechat-cli` - query local WeChat chat data with the `wechat-cli` binary.
 - `wecom-checkin` - query WeCom attendance/check-in status.
 - `youdao-export` - export Youdao Cloud Notes to local files.
@@ -39,6 +42,7 @@ Install the current skills:
 npx skills add backtomyfuture/agent-skills@bark-notify -g -y
 npx skills add backtomyfuture/agent-skills@exchange-cli -g -y
 npx skills add backtomyfuture/agent-skills@format-platform-article -g -y
+npx skills add backtomyfuture/agent-skills@hna-leave-application -g -y
 npx skills add backtomyfuture/agent-skills@lark-minutes-base-sync -g -y
 npx skills add backtomyfuture/agent-skills@markdown-table-images -g -y
 npx skills add backtomyfuture/agent-skills@monthly-attendance -g -y
@@ -49,6 +53,8 @@ npx skills add backtomyfuture/agent-skills@openrouter-paid-ai-index -g -y
 npx skills add backtomyfuture/agent-skills@publish-mdnice-article -g -y
 npx skills add backtomyfuture/agent-skills@publish-xiaohongshu-article -g -y
 npx skills add backtomyfuture/agent-skills@publish-zsxq-article -g -y
+npx skills add backtomyfuture/agent-skills@report-to-email -g -y
+npx skills add backtomyfuture/agent-skills@toutiao-content-pipeline -g -y
 npx skills add backtomyfuture/agent-skills@wechat-cli -g -y
 npx skills add backtomyfuture/agent-skills@wecom-checkin -g -y
 npx skills add backtomyfuture/agent-skills@youdao-export -g -y
@@ -62,6 +68,7 @@ agent-skills/
     ├── bark-notify/
     ├── exchange-cli/
     ├── format-platform-article/
+    ├── hna-leave-application/
     ├── lark-minutes-base-sync/
     ├── markdown-table-images/
     ├── monthly-attendance/
@@ -72,6 +79,8 @@ agent-skills/
     ├── publish-mdnice-article/
     ├── publish-xiaohongshu-article/
     ├── publish-zsxq-article/
+    ├── report-to-email/
+    ├── toutiao-content-pipeline/
     ├── wechat-cli/
     ├── wecom-checkin/
     └── youdao-export/
