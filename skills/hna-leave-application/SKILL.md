@@ -200,10 +200,11 @@ attachment row (中心经理审批邮件.pdf). 截图是无头会话内的 agent
 bash scripts/submit.sh           # prints SUBMITTED (...) on success
 ```
 
-`submit.sh` 输出 `SUBMITTED (post|toast|nav)` 后即已获得成功证据。应直接向用户
-返回该提交结果；不要为了额外确认而主动打开或浏览公文跟踪页。门户如自动跳转至
-公文跟踪页，属于提交后的系统行为，可作为补充证据；跳转后网络日志可能按标签页重置
-为空，不能据此判断提交失败。
+`submit.sh` 输出 `SUBMITTED (post|toast|nav)` 后即已获得成功证据。随后它会按本技能
+专用的 CDP 端口关闭 HNA 自动化浏览器，并输出 `AGENT_BROWSER_CLOSED`；这不会影响
+其他 `agent-browser` 会话。清理失败只会告警，不能覆盖已确认的提交成功。应直接向用户返回该提交结果；不要为了额外确认而主动打开或浏览
+公文跟踪页。门户如自动跳转至公文跟踪页，属于提交后的系统行为，可作为补充证据；
+跳转后网络日志可能按标签页重置为空，不能据此判断提交失败。
 
 若已知有同日期、同内容的旧公文而用户未明确要求重新呈报，应先说明风险并询问；不能用公文跟踪“无搜索结果”推断旧公文不存在。用户明确要求重新呈报时，可以创建新公文，但不得擅自撤回旧公文。
 
@@ -271,4 +272,4 @@ These were learned by live-driving the page; keep them in mind before editing.
   headed window only for manual SSO login, then saves the new state and
   restarts headless before returning `READY`; `HNA_HEADED` is not supported.
 - `scripts/fill_form.sh` — 标准请示模板、流程选择、附件可见性校验与字段填写；不提交。
-- `scripts/submit.sh` — 先锁定休假表单，再调用 `checkFormMain()`；验证成功并防止同一会话重复提交。
+- `scripts/submit.sh` — 先锁定休假表单，再调用 `checkFormMain()`；验证成功并防止同一会话重复提交，成功后关闭本技能专用的 CDP 自动化浏览器。

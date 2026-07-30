@@ -36,7 +36,7 @@ TARGET="http://hr.hna.net/ehr/NewHomePage/EmployeeBenefits/LeaveApplicationLink.
 # form can open from its own app cookies even after that SSO session has
 # idle-expired — so reaching the form is NOT enough; we probe oa3 explicitly.
 OA3_PROBE="http://oa3.hnair.net/OAWebApp/OA/Workflow/Process/MyFlow.aspx?Advice=2"
-CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME_APP="Google Chrome"
 
 # launch_chrome <headless|headed> [url] — kill any instance on our port and
 # start fresh, opening the given URL (default: the leave form).
@@ -50,14 +50,18 @@ launch_chrome() {
   # picker via window.open(), and Chrome's popup blocker intermittently swallows
   # window.open calls driven by CDP clicks. Disabling the blocker keeps the
   # popup (and its window.opener link back to the form) working every time.
-  nohup "$CHROME" \
+  # A Chrome process started as a background child of the terminal runner can
+  # be reaped as soon as that runner exits, which makes the manual SSO window
+  # flash and disappear. Launch Services detaches it cleanly on macOS while
+  # preserving all Chrome arguments.
+  open -na "$CHROME_APP" --args \
     ${extra[@]+"${extra[@]}"} \
     --user-data-dir="$PROFILE" \
     --remote-debugging-port="${PORT}" \
     --no-first-run --no-default-browser-check \
     --disable-popup-blocking \
     --window-size=1400,900 \
-    "${2:-$TARGET}" >/tmp/hna-chrome.log 2>&1 &
+    "${2:-$TARGET}"
   for _ in $(seq 1 20); do
     curl -s "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1 && return 0
     sleep 1
