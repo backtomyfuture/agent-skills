@@ -89,6 +89,58 @@ def calc_column_widths(rows, col_count):
     return widths
 
 
+def render_table_html(rows, has_header=True):
+    """Render a 2D array of cells into an Outlook-compatible styled HTML table."""
+    if not rows:
+        return ""
+
+    col_count = max(len(r) for r in rows)
+    widths = calc_column_widths(rows, col_count)
+
+    html_parts = []
+    html_parts.append(
+        f'<table width="100%" cellpadding="0" cellspacing="0" '
+        f'style="border-collapse:collapse;font-size:13px;margin-bottom:4px;table-layout:auto;">'
+    )
+
+    for row_idx, row in enumerate(rows):
+        is_header = has_header and row_idx == 0
+        data_idx = row_idx - (1 if has_header else 0)  # index among data rows
+        if is_header:
+            html_parts.append(f'  <tr style="background-color:{C_TABLE_HEADER};">')
+        elif data_idx % 2 == 0:
+            html_parts.append(f'  <tr style="background-color:{C_TABLE_STRIPE};">')
+        else:
+            html_parts.append('  <tr>')
+
+        for col_idx, cell in enumerate(row):
+            cell_html = inline_markdown(cell)
+            width_attr = f' width="{widths[col_idx]}%"' if col_idx < len(widths) else ''
+            border = f'border-bottom:1px solid {C_TABLE_BORDER};' if row_idx < len(rows) - 1 else ''
+
+            if is_header:
+                radius = ''
+                if col_idx == 0:
+                    radius = 'border-radius:6px 0 0 0;'
+                elif col_idx == len(row) - 1:
+                    radius = 'border-radius:0 6px 0 0;'
+                html_parts.append(
+                    f'    <td style="padding:10px 14px;color:#fff;font-weight:600;text-align:center;{radius}"{width_attr}>'
+                    f'{cell_html}</td>'
+                )
+            else:
+                first_col_style = f'color:{C_HEADING};font-weight:600;white-space:nowrap;' if col_idx == 0 else f'color:{C_TEXT};'
+                html_parts.append(
+                    f'    <td style="padding:10px 14px;{first_col_style}{border}"{width_attr}>'
+                    f'{cell_html}</td>'
+                )
+
+        html_parts.append('  </tr>')
+
+    html_parts.append('</table>')
+    return '\n'.join(html_parts)
+
+
 def parse_table_block(lines, start_idx):
     """
     Parse a Notion-style <table> block starting at start_idx.
@@ -142,51 +194,58 @@ def parse_table_block(lines, start_idx):
     if not rows:
         return "", i
 
-    col_count = max(len(r) for r in rows)
-    widths = calc_column_widths(rows, col_count)
+    return render_table_html(rows, has_header), i
 
-    html_parts = []
-    html_parts.append(
-        f'<table width="100%" cellpadding="0" cellspacing="0" '
-        f'style="border-collapse:collapse;font-size:13px;margin-bottom:4px;table-layout:auto;">'
-    )
 
-    for row_idx, row in enumerate(rows):
-        is_header = has_header and row_idx == 0
-        data_idx = row_idx - (1 if has_header else 0)  # index among data rows
-        if is_header:
-            html_parts.append(f'  <tr style="background-color:{C_TABLE_HEADER};">')
-        elif data_idx % 2 == 0:
-            html_parts.append(f'  <tr style="background-color:{C_TABLE_STRIPE};">')
+def parse_markdown_table_block(lines, start_idx):
+    """
+    Parse a Markdown pipe table block starting at start_idx.
+    Returns (table_html, end_idx).
+    """
+    table_lines = []
+    i = start_idx
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            break
+        if line.startswith('|'):
+            while i < len(lines) and not line.endswith('|'):
+                i += 1
+                if i < len(lines):
+                    next_l = lines[i].strip()
+                    if next_l:
+                        line = line + '<br>' + next_l
+                    else:
+                        break
+            if not line.endswith('|'):
+                break
+            table_lines.append(line)
+            i += 1
         else:
-            html_parts.append('  <tr>')
+            break
 
-        for col_idx, cell in enumerate(row):
-            cell_html = inline_markdown(cell)
-            width_attr = f' width="{widths[col_idx]}%"' if col_idx < len(widths) else ''
-            border = f'border-bottom:1px solid {C_TABLE_BORDER};' if row_idx < len(rows) - 1 else ''
+    if not table_lines:
+        return "", start_idx
 
-            if is_header:
-                radius = ''
-                if col_idx == 0:
-                    radius = 'border-radius:6px 0 0 0;'
-                elif col_idx == len(row) - 1:
-                    radius = 'border-radius:0 6px 0 0;'
-                html_parts.append(
-                    f'    <td style="padding:10px 14px;color:#fff;font-weight:600;text-align:center;{radius}">'
-                    f'{cell_html}</td>'
-                )
-            else:
-                first_col_style = f'color:{C_HEADING};font-weight:600;white-space:nowrap;' if col_idx == 0 else f'color:{C_TEXT};'
-                html_parts.append(
-                    f'    <td style="padding:10px 14px;{first_col_style}{border}">'
-                    f'{cell_html}</td>'
-                )
+    rows = []
+    has_header = False
+    for line in table_lines:
+        inner = line.strip()
+        if inner.startswith('|'):
+            inner = inner[1:]
+        if inner.endswith('|'):
+            inner = inner[:-1]
+        cells = [c.strip() for c in inner.split('|')]
+        # Check for delimiter row: | --- | :---: | ---: |
+        if all(re.match(r'^:?-+:?$', c.strip()) for c in cells if c.strip()):
+            has_header = True
+            continue
+        rows.append(cells)
 
-        html_parts.append('  </tr>')
+    if not rows:
+        return "", i
 
-    html_parts.append('</table>')
-    return '\n'.join(html_parts), i
+    return render_table_html(rows, has_header), i
 
 
 def parse_content(text):
@@ -203,8 +262,8 @@ def parse_content(text):
         line = lines[i]
         stripped = line.strip()
 
-        # Skip empty lines
-        if not stripped:
+        # Skip empty lines and Notion empty blocks
+        if not stripped or stripped == '<empty-block/>':
             i += 1
             continue
 
@@ -214,9 +273,36 @@ def parse_content(text):
             i += 1
             continue
 
-        # Table block
+        # Notion Callout block
+        if stripped.startswith('<callout'):
+            callout_lines = []
+            i += 1
+            while i < len(lines):
+                c_line = lines[i].strip()
+                if c_line.startswith('</callout>'):
+                    i += 1
+                    break
+                callout_lines.append(c_line)
+                i += 1
+            callout_text = '\n'.join(callout_lines).strip()
+            # If it's an insight callout (starts with **启发** or 启发)
+            if callout_text.startswith('**启发**') or callout_text.startswith('启发'):
+                insight_text = re.sub(r'^\*\*启\*?\*?发?\*?\*?\s*', '', callout_text).strip()
+                blocks.append({'type': 'insight', 'text': insight_text})
+            else:
+                blocks.append({'type': 'insight', 'text': callout_text})
+            continue
+
+        # HTML Table block
         if stripped.startswith('<table'):
             table_html, i = parse_table_block(lines, i)
+            if table_html:
+                blocks.append({'type': 'table', 'html': table_html})
+            continue
+
+        # Markdown pipe table block
+        if stripped.startswith('|') and stripped.endswith('|'):
+            table_html, i = parse_markdown_table_block(lines, i)
             if table_html:
                 blocks.append({'type': 'table', 'html': table_html})
             continue
@@ -236,7 +322,7 @@ def parse_content(text):
         para_lines = []
         while i < len(lines):
             l = lines[i].strip()
-            if not l or l == '---' or l.startswith('<table') or re.match(r'^#{1,3}\s+', l):
+            if not l or l == '---' or l == '<empty-block/>' or l.startswith('<callout') or l.startswith('<table') or (l.startswith('|') and l.endswith('|')) or re.match(r'^#{1,3}\s+', l):
                 break
             para_lines.append(l)
             i += 1
@@ -396,6 +482,8 @@ def detect_part_label(text):
         # If remaining is empty, check second line
         if not remaining and '\n' in text:
             remaining = text.split('\n', 1)[1].strip()
+        # Clean leading separator: ·, •, -, :, etc.
+        remaining = re.sub(r'^[·•\-:\uff1a\s]+', '', remaining).strip()
         return m.group(1).upper(), remaining
     return None
 
@@ -419,6 +507,9 @@ def parse_named_dash_entry(text):
     if match2:
         title = match2.group(1).strip()
         description = match2.group(2).strip()
+        # Ensure balanced bold markers so we don't split inside **...**
+        if title.count('**') % 2 != 0:
+            return None
         # Strip markdown bold markers for length check
         title_plain = re.sub(r'\*\*(.+?)\*\*', r'\1', title)
         if title and description and len(title_plain) <= 15:
@@ -434,14 +525,14 @@ def parse_dash_entry_name(raw_line):
     m = re.match(r'^——\s*\*\*(.+?)\*\*(.*)$', stripped)
     if m:
         name = m.group(1).strip()
-        body = m.group(2).lstrip('，、,').strip()
+        body = m.group(2).lstrip('，、,。：: ').strip()
         return name, body
     # Pattern B: ——prefix**Name**body  (bold appears after some prefix text)
     m = re.match(r'^——\s*(.+?)\*\*(.+?)\*\*(.*)$', stripped)
     if m:
         prefix = m.group(1).strip()
         bold_part = m.group(2).strip()
-        suffix = m.group(3).lstrip('，、,').strip()
+        suffix = m.group(3).lstrip('，、,。：: ').strip()
         name = f'{prefix}<strong>{bold_part}</strong>'
         return name, suffix
     return None
@@ -467,7 +558,13 @@ def render_block(block):
         )
 
     if btype == 'divider':
-        return '<tr><td style="padding:0 48px;"><hr style="border:none;border-top:2px solid #eef1f6;margin:4px 0;"></td></tr>'
+        return (
+            f'<tr><td style="padding:8px 48px;">'
+            f'<table width="100%" cellpadding="0" cellspacing="0"><tr>'
+            f'<td style="background-color:#eef1f6;height:2px;font-size:0;line-height:0;">&nbsp;</td>'
+            f'</tr></table>'
+            f'</td></tr>'
+        )
 
     if btype == 'table':
         return f'<tr><td style="padding:0 48px 8px;">\n{block["html"]}\n</td></tr>'
@@ -729,12 +826,77 @@ def render_html(title, blocks, logo_b64, date_str, logo_mode='base64'):
 </tr>
 
 </table>
+
+<!-- Contact line sits under the card, matching the sent weekly emails:
+     SimSun 16pt, centered, white background. -->
+<p style="margin:12px 0 0;font-size:16pt;line-height:24pt;font-family:SimSun,宋体,serif;color:#212121;text-align:center;">如有问题，请联系信息技术部傅强，谢谢。</p>
+
 </td></tr>
 </table>
 </body>
 </html>'''
 
     return html
+
+
+def _format_address_header(value):
+    """Encode display names separately so Outlook does not show garbled To/Cc.
+
+    Passing a whole ``Name <email>`` string as a raw header lets Python wrap
+    the angle brackets inside a single encoded-word, which Outlook then shows
+    as mojibake. Split each address and use formataddr instead.
+    """
+    from email.header import Header
+    from email.utils import formataddr, getaddresses
+
+    if not value:
+        return ''
+
+    formatted = []
+    for name, addr in getaddresses([value]):
+        if not addr and not name:
+            continue
+        if not addr:
+            # Bare display-name fallback; keep as UTF-8 encoded header text.
+            formatted.append(str(Header(name, 'utf-8')))
+            continue
+        display = str(Header(name, 'utf-8')) if name else ''
+        formatted.append(formataddr((display, addr), charset='utf-8'))
+    return ', '.join(formatted) if formatted else value
+
+
+def _outlook_greeting_html(greeting):
+    """Render the approval preface in Outlook's native Word style.
+
+    Real sent weekly emails use SimSun 16pt. Word's HTML writes
+    line-height:18pt without mso-line-height-rule:exactly, so Outlook
+    treats it as "at least 18pt" and SimSun 16pt actually renders near
+    single spacing (~24pt). Forcing CSS 18pt looks cramped.
+    """
+    p_base = (
+        'margin:0;line-height:24pt;mso-line-height-rule:at-least;'
+        'font-size:16pt;font-family:SimSun,宋体,serif;'
+        'color:#212121;text-align:left;'
+    )
+    lines = greeting.replace('\r\n', '\n').split('\n')
+    # Drop a single trailing blank so we don't add an extra empty paragraph
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    html_parts = []
+    indent_next = False
+    for line in lines:
+        text = line.strip()
+        if not text:
+            html_parts.append(f'<p style="{p_base}">&nbsp;</p>\n')
+            continue
+        indent = indent_next
+        indent_next = text.startswith('各位领导')
+        indent_css = 'text-indent:32pt;' if indent else ''
+        html_parts.append(
+            f'<p style="{p_base}{indent_css}">{escape(text)}</p>\n'
+        )
+    return ''.join(html_parts)
 
 
 def generate_eml(html_body, title, logo_path, output_path,
@@ -745,23 +907,25 @@ def generate_eml(html_body, title, logo_path, output_path,
     from email.mime.image import MIMEImage
     from email.utils import formatdate
 
-    # Inject greeting above the newsletter if provided
+    # Inject greeting above the newsletter if provided.
+    # Match Outlook/Word body: SimSun 16pt, left-aligned, full-width —
+    # not inside the centered 780px newsletter card. The paragraph after
+    # 「各位领导：」 uses a 2-character first-line indent.
     if greeting:
-        greeting_lines = greeting.strip().split('\n')
-        greeting_html = ''.join(
-            f'<p style="margin:0 0 8px;font-size:15px;color:#333;line-height:1.85;">{escape(line)}</p>\n'
-            if line.strip() else '<p style="margin:0 0 8px;">&nbsp;</p>\n'
-            for line in greeting_lines
-        )
+        greeting_html = _outlook_greeting_html(greeting)
         greeting_block = (
             f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
             f'style="background-color:#ffffff;">\n'
-            f'<tr><td align="center" style="padding:12px 12px 0;">\n'
-            f'<table width="780" cellpadding="0" cellspacing="0">\n'
-            f'<tr><td style="padding:0 4px;">\n'
+            f'<tr><td align="left" style="padding:0 8px 0 8px;text-align:left;">\n'
             f'{greeting_html}'
             f'</td></tr></table>\n'
-            f'</td></tr></table>\n'
+        )
+        # Greeting already occupies the top; shrink the newsletter card's
+        # top padding so 「供参阅」 does not sit too far above the card.
+        html_body = html_body.replace(
+            '<tr><td align="center" style="padding:24px 12px;">',
+            '<tr><td align="center" style="padding:8px 12px 24px 12px;">',
+            1
         )
         html_body = html_body.replace(
             '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#ffffff;">',
@@ -772,9 +936,9 @@ def generate_eml(html_body, title, logo_path, output_path,
     msg = MIMEMultipart('related')
     msg['Subject'] = title
     msg['From'] = ''
-    msg['To'] = mail_to
+    msg['To'] = _format_address_header(mail_to)
     if mail_cc:
-        msg['Cc'] = mail_cc
+        msg['Cc'] = _format_address_header(mail_cc)
     msg['Date'] = formatdate(localtime=True)
     msg['MIME-Version'] = '1.0'
 
