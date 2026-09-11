@@ -1,6 +1,6 @@
 ---
 name: publish-xiaohongshu-article
-description: Publish or stage an article/note to Xiaohongshu / RedNote / 小红书 from a local Markdown file, a Notion-sourced Markdown export, or a Notion page URL. ALWAYS use this skill whenever the user mentions 小红书, RedNote, rednote, xhs, xiaohongshu, 小红书笔记, 小红书长文, 创作服务平台, creator.xiaohongshu.com, 发小红书, 发布到小红书, or asks to turn a Notion page / Markdown file / article note into a Xiaohongshu post. This skill prepares title, body, topics, and local images, then uses the local `xiaohongshu-skills` CLI for post-login publishing actions. Login is user-managed through browser / agent-browser. Default to filling a draft/preview first; only click final publish when the user explicitly asks to publish now or schedule.
+description: Publish or stage an article/note to Xiaohongshu / RedNote / 小红书 from a local Markdown file, a Notion-sourced Markdown export, or a Notion page URL. ALWAYS use this skill whenever the user mentions 小红书, RedNote, rednote, xhs, xiaohongshu, 小红书笔记, 小红书长文, 创作服务平台, creator.xiaohongshu.com, 发小红书, 发布到小红书, or asks to turn a Notion page / Markdown file / article note into a Xiaohongshu post. This skill prepares title, body, topics, and local images, then uses the local `xiaohongshu-skills` CLI for post-login publishing actions. Login is user-managed in an Ego Lite TaskSpace. Default to filling a draft/preview first; only click final publish when the user explicitly asks to publish now or schedule.
 ---
 
 # Publish Xiaohongshu Article
@@ -11,11 +11,11 @@ Xiaohongshu is not a Markdown editor. Treat it as a social publishing surface: e
 
 ## Operating Boundary
 
-- **Login is out of scope.** The user manages login through browser / `agent-browser`. Do not run `login`, `get-qrcode`, `wait-login`, `phone-login`, `send-code`, `verify-code`, or `delete-cookies` from `xiaohongshu-skills`.
-- You may run `check-login` once as a non-destructive readiness check. If it reports not logged in, stop and ask the user to complete login in their browser, then continue after they confirm.
+- **Login is out of scope.** The user manages login in an Ego Lite TaskSpace. Do not run `login`, `get-qrcode`, `wait-login`, `phone-login`, `send-code`, `verify-code`, or `delete-cookies` from `xiaohongshu-skills`.
+- You may run `check-login` once as a non-destructive readiness check. If it reports not logged in, stop and ask the user to complete login in the Ego Lite TaskSpace, then continue after they confirm.
 - For publishing and staging, prefer the local `xiaohongshu-skills` CLI. Run it from its own directory with `uv run python scripts/cli.py <subcommand>`.
 - Do not use Xiaohongshu MCP servers, Go tools, or other external publishing implementations for this skill. They cannot reliably stage a preview and they conflict with the local CLI boundary.
-- Use `agent-browser` only for the user-managed login phase, live page inspection, or an explicit last-resort manual fallback requested by the user.
+- Use the same Ego Lite TaskSpace for the user-managed login phase, live page inspection, or an explicit last-resort manual fallback requested by the user. If the user hands the task back after logging in, resume in that same TaskSpace.
 
 ## Safety Defaults
 
@@ -87,7 +87,7 @@ for p in \
 done
 ```
 
-If no directory is found, stop and tell the user that the local `xiaohongshu-skills` CLI is missing. Do not switch to a Xiaohongshu MCP backend. Use `agent-browser` for publishing only if the user explicitly asks for manual fallback.
+If no directory is found, stop and tell the user that the local `xiaohongshu-skills` CLI is missing. Do not switch to a Xiaohongshu MCP backend. Use the Ego Lite TaskSpace for publishing only if the user explicitly asks for manual fallback.
 
 ### Ensure Dependencies
 
@@ -114,9 +114,9 @@ cd '<XIAOHONGSHU_SKILLS_DIR>'
 uv run python scripts/cli.py check-login
 ```
 
-If the JSON says `logged_in: false`, stop and ask the user to complete login with their browser / `agent-browser`. Continue only after the user says the logged-in browser session is ready.
+If the JSON says `logged_in: false`, stop and ask the user to complete login in the Ego Lite TaskSpace. Continue only after the user says the logged-in session is ready, then resume in that same TaskSpace.
 
-Do not display returned QR codes, login links, or phone-login instructions from this skill. Those belong to the user's separate browser-managed login flow.
+Do not display returned QR codes, login links, or phone-login instructions from this skill. Those belong to the user's separate Ego Lite TaskSpace login flow.
 
 ## Ingest
 
@@ -233,34 +233,14 @@ If they cancel after staging, use `save-draft` unless they explicitly ask to lea
 
 ## Browser Fallback
 
-This is not the default. Use browser UI automation only when:
+This is not the default. Use Ego Lite TaskSpace UI automation only when:
 
-- The user explicitly asks to handle the publish form manually with `agent-browser`; or
+- The user explicitly asks to handle the publish form manually in the Ego Lite TaskSpace; or
 - `xiaohongshu-skills` is missing/broken and the user accepts the manual fallback.
 
-Before typing or uploading anything, inspect the live DOM:
+Before typing or uploading anything, inspect the live page with `page.snapshot`. Use the returned visible refs and labels rather than hard-coded selectors. Fill fields with `page.fill`. For image uploads, wait for the file chooser with `page.waitForFileChooser`, then provide absolute paths with `page.setInputFiles`.
 
-```bash
-agent-browser --session-name xhs eval '(() => ({
-  url: location.href,
-  inputs: [...document.querySelectorAll("input, textarea")].map((e, i) => ({
-    i,
-    type: e.type || e.tagName,
-    placeholder: e.placeholder || "",
-    aria: e.getAttribute("aria-label") || ""
-  })),
-  buttons: [...document.querySelectorAll("button")].map(b => b.textContent.trim()).filter(Boolean).slice(0, 30),
-  fileInputs: document.querySelectorAll("input[type=file]").length
-}))()'
-```
-
-Use visible placeholders and snapshot refs instead of hard-coded selectors. Upload images through the current `agent-browser` file upload workflow from:
-
-```bash
-agent-browser skills get core --full
-```
-
-If the installed `agent-browser` cannot upload files, stop and return to the `xiaohongshu-skills` CLI path. Do not fake file input values with JavaScript because browsers block that for security.
+The manual fallback is an explicit, same-task handoff: ask the user to log in or take over in the current TaskSpace, then resume after they return control. Do not create a new browser session. Do not fake file input values with JavaScript; use the file chooser APIs above.
 
 Never click `发布`, `立即发布`, or similar final buttons in browser fallback unless the user explicitly asked for final publish.
 
@@ -278,7 +258,7 @@ Before reporting completion:
 
 ## Failure Handling
 
-- **Not logged in:** stop and ask the user to finish login in browser / `agent-browser`; do not run login commands.
+- **Not logged in:** stop and ask the user to finish login in the Ego Lite TaskSpace; do not run login commands. Resume in the same TaskSpace after confirmation.
 - **CLI missing:** report the missing `xiaohongshu-skills` directory and ask whether to install/fix it or use explicit browser fallback.
 - **Dependencies missing:** run `uv sync` inside `xiaohongshu-skills`, then retry `uv run python scripts/cli.py --help`.
 - **Bridge extension disconnected:** ask the user to open Chrome and ensure the XHS Bridge extension is installed/enabled; then retry the CLI command.

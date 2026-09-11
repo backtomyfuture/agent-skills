@@ -5,44 +5,32 @@
       "id": 1,
       "name": "simple-local-markdown",
       "prompt": "帮我把这个 Markdown 文件发到知识星球，明天 10 点定时发布：/tmp/zsxq-eval/simple-article.md。",
-      "expected_output": "Skill runs Pre-flight + Content + Publish pipelines (no image pipeline, no intermediate save-as-draft step). Scheduled publish is set for tomorrow 10:00 and the button text is verified as 定时发布 before being clicked. Skill reports back with confirmation including the scheduled date.",
+      "expected_output": "The skill prepares the article in an Ego Lite TaskSpace, hands off a staged page with submitted:false, and only after explicit authorization schedules tomorrow at 10:00. It verifies the button text is 定时发布 before the one allowed click.",
       "files": ["/tmp/zsxq-eval/simple-article.md"],
       "assertions": [
         {
-          "id": "preflight-close-all-ran",
-          "text": "The skill ran `agent-browser close --all` exactly once at the start, before any other agent-browser command."
+          "id": "single-task-space",
+          "text": "The skill creates one Ego Lite TaskSpace and reuses its taskSpaceId for every later stage or submit round."
         },
         {
-          "id": "used-prepare-content-script",
-          "text": "The skill invoked scripts/prepare_content.py with the source Markdown path single-quoted, rather than constructing Markdown-paste JS inline."
+          "id": "same-task-login-handoff",
+          "text": "If login is required, the stage helper reports login_required, hands off the page, and resumes only after login with the same taskSpaceId."
         },
         {
-          "id": "switched-to-markdown-mode",
-          "text": "The skill verified `.ProseMirror` is present in the DOM before attempting to paste content (confirming Markdown mode)."
+          "id": "generated-body-evaluated",
+          "text": "The skill invokes prepare_content.py and evaluates its generated body JavaScript with page.evaluate() in the Ego Lite page, rather than filling or typing Markdown."
         },
         {
-          "id": "content-pasted-via-eval-file",
-          "text": "The skill pasted body content via `eval \"$(cat /tmp/zsxq_paste_content.js)\"`, not via `fill` or `type`."
+          "id": "markdown-mode-verified",
+          "text": "The stage helper waits for .ProseMirror after switching from Quill and dismisses a restore-draft prompt only through the exact 忽略 control."
         },
         {
-          "id": "no-image-pipeline-ran",
-          "text": "Because the input has no images, the skill did not run any marker-deletion or image-paste commands."
+          "id": "staged-before-submit",
+          "text": "The stage result includes status staged, submitted:false, a ProseMirror body verification, and a screenshot under /tmp/zsxq-article; it does not schedule or publish."
         },
         {
-          "id": "no-intermediate-save-draft",
-          "text": "The skill did NOT click `保存` or navigate to 我的文章 before scheduling. Scheduling itself is the save, so an intermediate draft-save step would be redundant and must not occur."
-        },
-        {
-          "id": "scheduled-publish-set",
-          "text": "The skill enabled the schedule switch, set the date to tomorrow and the time to 10:00, verified the publish button text changed to 定时发布, and clicked it."
-        },
-        {
-          "id": "never-clicked-instant-publish",
-          "text": "The skill never clicked `.operation-btns .post.btn` while its text was 发布."
-        },
-        {
-          "id": "final-report-includes-scheduled-date",
-          "text": "The skill's final message to the user mentions the scheduled date (tomorrow's date) and 10:00."
+          "id": "scheduled-safely",
+          "text": "After explicit authorization, submit sets tomorrow at 10:00, requires exact 定时发布 text, clicks once, and never clicks while the text is 发布."
         }
       ]
     },
@@ -50,44 +38,32 @@
       "id": 2,
       "name": "notion-url-with-images",
       "prompt": "从这篇 Notion 笔记发到知识星球：https://www.notion.so/jarod/Weekly-AI-Digest-abc123def456。里面应该有几张配图，记得都带上。",
-      "expected_output": "Skill calls notion-fetch on the URL, writes the extracted Markdown body to a scratch file under /tmp/zsxq-notion/, runs notion_ingest.py to download all remote images locally, then continues with prepare_content.py on /tmp/zsxq-notion/article.md. Image positions in the final Zsxq post match their positions in the Notion source. Scheduled for tomorrow 10:00.",
+      "expected_output": "The skill fetches and localizes the Notion article, stages it in one Ego Lite TaskSpace with images in source order, verifies ProseMirror and image counts, then schedules tomorrow at 10:00 only after explicit authorization.",
       "files": [],
       "assertions": [
         {
-          "id": "notion-fetch-called",
-          "text": "The skill called the notion-fetch MCP tool with the user-provided Notion URL before doing any browser work."
+          "id": "notion-localization",
+          "text": "The skill calls notion-fetch before browser work, runs notion_ingest.py into /tmp/zsxq-notion, checks failed_count, and runs prepare_content.py on the localized article.md."
         },
         {
-          "id": "notion-ingest-ran",
-          "text": "The skill ran scripts/notion_ingest.py with the Notion-fetched Markdown and an output directory under /tmp/."
+          "id": "image-order-preserved",
+          "text": "The skill passes image markers and generated image JavaScript to stage in source order."
         },
         {
-          "id": "images-downloaded-locally",
-          "text": "Each image referenced in the Notion page exists as a local file in the notion_ingest output directory after the ingest step."
+          "id": "three-image-actions",
+          "text": "For each image, stage performs marker deletion with page.evaluate(), waits 500ms, and evaluates the generated image JavaScript as three distinct actions."
         },
         {
-          "id": "image-positions-preserved",
-          "text": "The image order in the final Zsxq post matches the image order in the Notion source exactly (first image in Notion = first image in Zsxq post, etc.)."
+          "id": "image-verification",
+          "text": "The stage result verifies zero markers and that visible ProseMirror image count equals the number of staged images."
         },
         {
-          "id": "prepare-content-on-localized-md",
-          "text": "The skill ran scripts/prepare_content.py on the article.md produced by notion_ingest.py (not on the raw Notion response)."
+          "id": "no-early-submit",
+          "text": "The stage round does not schedule, click 保存, or click any publish control before the user explicitly authorizes submit."
         },
         {
-          "id": "image-pipeline-ran-per-image",
-          "text": "The three-command image-insertion sequence (marker delete / wait 500 / paste) ran once per image, in order."
-        },
-        {
-          "id": "image-commands-separated",
-          "text": "For each image the marker-deletion eval, the `agent-browser wait 500`, and the paste-image eval were three separate commands — not combined into a single eval."
-        },
-        {
-          "id": "no-intermediate-save-draft",
-          "text": "The skill did NOT click `保存` before scheduling. Only the scheduled-publish flow was used."
-        },
-        {
-          "id": "scheduled-publish-set",
-          "text": "The skill enabled the schedule switch, set tomorrow 10:00, verified the button text is 定时发布, and clicked it."
+          "id": "safe-scheduled-submit",
+          "text": "The submit round verifies 定时发布 exactly before one click and reports the scheduled date/time or a non-retried click_sent_unverified error."
         }
       ]
     },
@@ -95,20 +71,20 @@
       "id": 3,
       "name": "notion-url-with-expired-signed-images",
       "prompt": "把这篇 Notion 文章发到星球：https://www.notion.so/jarod/Long-Article-xyz789。（测试场景：其中一张图片的 Notion signed URL 已过期，会下载失败。）",
-      "expected_output": "notion_ingest.py reports failed_count > 0 in its JSON summary. The skill stops, surfaces the failure to the user, and asks whether to re-fetch the Notion page (to get fresh signed URLs) or proceed with the missing image skipped. Does not silently publish a post with broken image references.",
+      "expected_output": "The skill sees failed_count > 0 from notion_ingest.py, stops before browser staging, and asks whether to re-fetch the Notion page or proceed with named images omitted.",
       "files": [],
       "assertions": [
         {
           "id": "failure-detected",
-          "text": "The skill inspected the JSON summary from notion_ingest.py and noticed failed_count > 0 rather than proceeding blindly."
+          "text": "The skill inspects the JSON summary from notion_ingest.py and notices failed_count > 0."
         },
         {
           "id": "asks-user-how-to-proceed",
-          "text": "On detecting failed downloads, the skill surfaced the issue to the user and asked whether to re-fetch the Notion page or to skip the missing image(s) — rather than silently publishing a post with broken references."
+          "text": "The skill explains which image downloads failed and asks whether to re-fetch the Notion page or proceed with those images omitted."
         },
         {
-          "id": "no-silent-instant-publish",
-          "text": "The skill did not click the publish button while recovering from the image failure. Whatever path is taken, scheduled publish remains the only submit."
+          "id": "no-broken-staging",
+          "text": "The skill does not silently stage or schedule an article with failed image references."
         }
       ]
     }

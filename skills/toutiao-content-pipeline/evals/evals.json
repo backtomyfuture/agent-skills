@@ -22,7 +22,7 @@
     {
       "id": 4,
       "prompt": "帮我把这篇 2500 字长文填到头条号编辑器，确认正文完整，不要发布。浏览器 snapshot 可能看不全。",
-      "expected_output": "使用当前 snapshot refs 的 @eXX 形式，contenteditable 编辑器 click 后立即 keyboard inserttext；不使用 agent-browser evaluate；不用错误的 screenshot 参数；长正文验证要抽样开篇、中段、结尾或参考来源，并把状态写成 staged_autosaved 而不是声称已点击保存草稿。",
+      "expected_output": "使用 Ego Lite TaskSpace 的页面 API 填充 Toutiao ProseMirror/React 编辑器；登录时 handOff，登录后用同一 taskSpaceId 恢复；不用预览/定时发布控件；长正文验证要抽样开篇、中段、结尾或参考来源，并把状态写成 staged_autosaved 而不是声称已点击保存草稿。",
       "files": []
     },
     {

@@ -221,12 +221,12 @@ python3 /Users/jarod/.agents/skills/toutiao-content-pipeline/scripts/create_tout
 Then render the generated HTML cards to PNG:
 
 ```bash
-agent-browser --session-name toutiao-visual --allow-file-access open 'file:///abs/path/visuals/cover.html'
-agent-browser --session-name toutiao-visual screenshot '#card' '/abs/path/visuals/cover.png'
-agent-browser --session-name toutiao-visual --allow-file-access open 'file:///abs/path/visuals/inline-1.html'
-agent-browser --session-name toutiao-visual screenshot '#card' '/abs/path/visuals/inline-1.png'
-agent-browser --session-name toutiao-visual --allow-file-access open 'file:///abs/path/visuals/inline-2.html'
-agent-browser --session-name toutiao-visual screenshot '#card' '/abs/path/visuals/inline-2.png'
+ego-browser nodejs <<'EOF'
+import { render } from "/Users/jarod/Documents/agent-skills/skills/toutiao-content-pipeline/scripts/render_toutiao_visuals.mjs";
+await render({
+  planPath: "/tmp/toutiao-content-pipeline/<run>/visual-output/visual_plan.json",
+});
+EOF
 ```
 
 Continue with `draft_with_visuals.md` from the helper, not the original text-only draft. Verify:
@@ -284,7 +284,11 @@ Read `payload.json` before browser staging. Stop if it reports missing local ima
 
 ## Phase 9: Stage In Toutiao
 
-Use a browser automation skill/tool when available. Prefer `agent-browser` in this environment because it preserves a reusable profile and lets the user log in manually.
+Use Ego Lite TaskSpace helpers for all Toutiao browser work. Ego Lite isolates
+the task from the user's normal browser. Login is user-managed: if the helper
+reports `login_required`, the task space is handed off for manual login and
+the same `taskSpaceId` is used to resume. The visual renderer is deliberately
+separate and does not use an authenticated editor task space.
 
 Recommended entry points:
 
@@ -292,82 +296,83 @@ Recommended entry points:
 - Micro-post editor: `https://mp.toutiao.com/profile_v4/weitoutiao/publish`
 - Generic backend: `https://mp.toutiao.com/`
 
-Open the editor:
+Stage the editor:
 
 ```bash
-agent-browser --headed true --session-name toutiao open "https://mp.toutiao.com/profile_v4/graphic/publish"
+ego-browser nodejs <<'EOF'
+import { stage } from "/Users/jarod/Documents/agent-skills/skills/toutiao-content-pipeline/scripts/stage_toutiao_payload.mjs";
+await stage({
+  payloadPath: "/tmp/toutiao-content-pipeline/<run>/payloads/<slug>/payload.json",
+});
+EOF
 ```
 
-If the page shows a login state, stop and ask the user to complete login in the headed browser. Continue in the same session after they confirm.
-
-Use live page inspection before interacting:
+If the result is `login_required`, tell the user to log in in the handed-off
+Ego Lite tab. After the user confirms, resume the same task space:
 
 ```bash
-agent-browser --session-name toutiao snapshot -i
+ego-browser nodejs <<'EOF'
+import { stage } from "/Users/jarod/Documents/agent-skills/skills/toutiao-content-pipeline/scripts/stage_toutiao_payload.mjs";
+await stage({
+  taskSpaceId: "<TASK_SPACE_ID>",
+  payloadPath: "/tmp/toutiao-content-pipeline/<run>/payloads/<slug>/payload.json",
+});
+EOF
 ```
 
-### `agent-browser` command notes
+### Ego Lite staging helper
 
-- Snapshot refs must be used as `@e114`, not `--ref e114`.
-- Refs are ephemeral. After every new `snapshot -i`, use the latest visible ref; do not reuse old refs such as `@e27` if the next snapshot changed it to `@e15`.
-- Screenshot syntax is `agent-browser --session-name toutiao screenshot [selector] [path]`. The selector is optional, but when present it comes before the path. Do not use `--full-page false`.
-- There is no `agent-browser evaluate` subcommand. The command name is `eval`, but browser staging verification should not depend on custom JS because editor internals can change. Prefer `snapshot`, `keyboard inserttext`, `screenshot`, and local file checks.
-
-Examples:
+The helper fills the title and the live Toutiao ProseMirror/React editor through
+the page API, replacing stale content with `setHTML`. It selects each
+`[[IMG_N]]` marker and attempts the corresponding local upload through a file
+chooser or page-level file-input API. It verifies title equality, opening/middle/
+ending body samples, source-section presence when available, and image count.
+It always reports `final_publish_clicked: false`.
 
 ```bash
-agent-browser --session-name toutiao click @e114
-agent-browser --session-name toutiao screenshot /tmp/toutiao-page.png
-agent-browser --session-name toutiao screenshot @e15 /tmp/toutiao-editor.png
+ego-browser nodejs <<'EOF'
+import { stage } from "/Users/jarod/Documents/agent-skills/skills/toutiao-content-pipeline/scripts/stage_toutiao_payload.mjs";
+await stage({
+  payloadPath: "/tmp/toutiao-content-pipeline/<run>/payloads/<slug>/payload.json",
+});
+EOF
 ```
 
-Then fill the visible form:
-
-- For article mode, fill the title from `title.txt` and the body from `body.txt`.
-- For micro-post mode, fill the main text from `body.txt`; only use `title.txt` if the page exposes a title-like field.
-- For images, replace `[[IMG_N]]` markers with the corresponding local file upload when the editor supports inline images. If the UI only supports cover images, ask the user whether to upload as cover or keep text-only.
-- If the editor exposes AI recommended images or free stock cover library, use it as a supplement when local inline upload is unreliable. This pattern is documented in `references/toutiao-tools.md`; verify the current UI before clicking.
-- Do not assume selectors. Use current snapshot refs, visible labels, and post-action verification.
-- For contenteditable/rich-text editors, click the current editor ref and immediately run `keyboard inserttext` from `body.txt`. If the first snapshot still shows the placeholder, take a fresh `snapshot -i`, click the new editor ref, and immediately insert again.
-
-Example:
-
-```bash
-agent-browser --session-name toutiao click @e15
-agent-browser --session-name toutiao keyboard inserttext "$(cat '/tmp/toutiao-content-pipeline/<run>/payloads/<slug>/body.txt')"
-```
-
-### ProseMirror staging helper
-
-If keyboard insertion leaves the body placeholder unchanged, duplicates stale text, or corrupts image markers, use the agent-browser-only helper. Do not use Selenium for this skill. The helper borrows the reusable ideas from `BoyuXiao/toutiao-auto-publisher` (selector fallback thinking, staging verification, publish-step separation) but executes through `agent-browser` and the live Toutiao ProseMirror editor only.
-
-Default staged/autosaved run:
-
-```bash
-python3 /Users/jarod/.agents/skills/toutiao-content-pipeline/scripts/stage_toutiao_payload_agent_browser.py \
-  '/tmp/toutiao-content-pipeline/<run>/payloads/<slug>/payload.json' \
-  --session-name toutiao \
-  --open
-```
-
-Use `--skip-images` only when image upload is blocked and the user approves text/cover-only staging. The helper never clicks final publish.
-
-Helper behavior:
-
-- Opens the article editor when `--open` is passed, otherwise reuses the current `agent-browser` session.
-- Fills the title from `payload.json`.
-- Uses the Toutiao editor's ProseMirror-backed `setHTML` path to replace stale editor content cleanly.
-- For each local image marker such as `[[IMG_1]]`, selects that exact marker through the editor selection and attempts upload through the live image dialog using `agent-browser upload`.
-- Prints a JSON result with `status`, `image_results`, editor stats, and `final_publish_clicked=false`.
-
-Keep this helper scoped to staging. It must not bypass login, platform rules, AI-content labeling, copyright checks, or risk controls.
+Keep this helper scoped to staging. It must not click `预览`, `定时发布`,
+`预览并发布`, or any other publish-like control, and must not bypass login,
+platform rules, AI-content labeling, copyright checks, or risk controls.
 
 Save or publish:
 
 - If the user did not explicitly ask for final publish, leave the filled editor open for review and report the status as `staged_autosaved`.
 - Toutiao currently may show only `预览`, `定时发布`, and `预览并发布`, with no explicit `保存草稿` button. Do not click any publish-like button just to create a draft.
 - If there is no draft button but the page autosaves, verify the editor still contains the inserted content and tell the user this is autosave/staging, not a guaranteed saved draft button.
-- If the user explicitly asked for final publish, click final publish only after the review gate summary.
+- If the user explicitly asked for final publish, do not reuse the staging
+  helper. First give the review-gate summary, then invoke the separate submit
+  helper below with the explicit `final_publish` target.
+
+### Explicit final publish
+
+Final publication is a separate, opt-in operation. Only after the user
+explicitly requests final publication of the already staged content, reclaim
+the same task space:
+
+```bash
+ego-browser nodejs <<'EOF'
+import { submit } from "/Users/jarod/Documents/agent-skills/skills/toutiao-content-pipeline/scripts/submit_toutiao.mjs";
+await submit({
+  taskSpaceId: "<TASK_SPACE_ID>",
+  target: "final_publish",
+});
+EOF
+```
+
+The submit helper inspects currently visible controls, rejects preview and
+schedule targets, clicks only an exact final-publish control followed by an
+exact confirmation control, and requires an observable success message or
+result navigation. It reports `final_published` only after that check. If
+success is not observable, it fails closed and reports that publication was not
+verified.
 
 ## Verification
 
@@ -382,24 +387,30 @@ After staging or publishing, record:
 - status: staged_autosaved, saved_draft, final_published, or blocked;
 - unresolved risks or user action required.
 
-For long bodies, do not rely on the top of `snapshot` output. It often truncates rich editor content. Verify by sampling opening, middle, and ending phrases from `body.txt`; at minimum include the ending "参考来源" or equivalent source section when present.
+For long bodies, do not rely on a compact page observation, which can truncate
+rich editor content. Verify by sampling opening, middle, and ending phrases
+from `body.txt`; at minimum include the ending "参考来源" or equivalent source
+section when present.
 
-Example:
+The staging helper records these samples and editor stats in its JSON result;
+also keep local payload checks:
 
 ```bash
 rg -n "开篇关键句|中段关键句|参考来源" '/tmp/toutiao-content-pipeline/<run>/payloads/<slug>/body.txt'
-agent-browser --session-name toutiao snapshot -i > '/tmp/toutiao-editor-snapshot.txt'
-rg -n "开篇关键句|参考来源" '/tmp/toutiao-editor-snapshot.txt' || true
 ```
 
-If `snapshot` only proves the opening content, report verification as "payload complete; editor opening confirmed; long-body full DOM length not available through current agent-browser CLI" instead of overstating certainty.
+If the editor does not expose a full body through its page API, report
+"payload complete; editor samples confirmed; long-body full DOM length not
+available" instead of overstating certainty.
 
 Report concise results to the user, including the payload directory and whether final publish was clicked.
 
 ## Fallbacks
 
 - If web search is unavailable, ask the user for source URLs or a local brief before drafting. Do not fabricate current news.
-- If `agent-browser` is unavailable, use the available browser automation tool for headed login and form filling. If no browser automation is available, stop after producing `payload.json`.
+- If Ego Lite is unavailable, stop after producing `payload.json` and report
+  that login/staging could not be performed. Do not fall back to persisted
+  browser credentials or a custom browser process.
 - If Toutiao changes its UI, inspect the live page and adapt. Do not keep retrying stale selectors.
 - If the account lacks article/micro-post publishing permissions, report the blocker and leave the payload files ready.
 

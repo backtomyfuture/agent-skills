@@ -35,14 +35,19 @@ Snapshot date: 2026-05-06.
 
 ## 2026-05-07 Live Run Corrections
 
-- `agent-browser` snapshot refs should be used as `@e114`, not `--ref e114`.
-- Screenshot syntax is `screenshot [selector] [path]`; use `--full` for full-page screenshots, not `--full-page false`.
-- Rich editors need click and `keyboard inserttext` as one immediate sequence. Snapshot refs can change after every snapshot.
-- Long editor content can be truncated in snapshot output. Verify local payload completeness and sample opening/middle/ending phrases instead of trusting the first rendered paragraphs.
-- The CLI command is `eval`, not `evaluate`; this skill should not rely on JS eval for core verification.
-- Toutiao may expose only `预览`, `定时发布`, and `预览并发布`, with no explicit `保存草稿` button. Default safe status is `staged_autosaved`.
-- Self-media benchmark/ranking claims should be downgraded or removed unless independently confirmed.
-- The desired workflow is autonomous topic selection from hot/current sources, not waiting for the user to choose every angle. Ask only when risk or ambiguity materially changes the article.
+- Ego Lite TaskSpace is the browser boundary for staging and explicit final
+  publication. Login is handed off to the user and resumed with the same
+  `taskSpaceId`; the skill does not access persistent browser credentials.
+- Long editor content may not be fully visible in a compact page observation.
+  Verify local payload completeness and sample opening, middle, and ending
+  phrases instead of trusting only the first rendered paragraphs.
+- Toutiao may expose only `预览`, `定时发布`, and `预览并发布`, with no explicit
+  `保存草稿` button. Default safe status is `staged_autosaved`.
+- Self-media benchmark/ranking claims should be downgraded or removed unless
+  independently confirmed.
+- The desired workflow is autonomous topic selection from hot/current sources,
+  not waiting for the user to choose every angle. Ask only when risk or
+  ambiguity materially changes the article.
 
 ## 2026-05-07 Tool Research
 

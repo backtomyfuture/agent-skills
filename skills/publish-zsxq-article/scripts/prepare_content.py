@@ -3,18 +3,19 @@
 Prepare Markdown content for Zsxq article editor injection.
 
 Reads a Markdown file, strips Notion/export metadata, extracts title,
-and writes a self-contained JS file that can be eval'd by agent-browser
-to paste the content into the Milkdown ProseMirror editor.
+and writes a self-contained JS file for page.evaluate() to paste the
+content into the Milkdown ProseMirror editor through Ego Lite.
 
 Usage:
     python3 prepare_content.py /path/to/article.md
     python3 prepare_content.py /path/to/article.md --output /tmp/zsxq_paste_content.js
     python3 prepare_content.py /path/to/article.md --title "Custom Title"
 
-Then run:
-    agent-browser --session-name zsxq eval "$(cat /tmp/zsxq_paste_content.js)"
+Then evaluate the generated code in the Ego Lite page:
+    const js = await readFile("/tmp/zsxq_paste_content.js", "utf8")
+    await page.evaluate(js)
 
-Output JSON from eval: { title, charCount, success }
+The page.evaluate() result is: { title, charCount, success }
 """
 
 import argparse

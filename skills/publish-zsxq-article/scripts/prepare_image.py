@@ -3,8 +3,8 @@
 Prepare an image for injection into Zsxq article editor via synthetic ClipboardEvent.
 
 Reads an image file, base64-encodes it, and writes a self-contained JS file
-that can be eval'd by agent-browser to paste the image into the Milkdown
-ProseMirror editor using a synthetic binary ClipboardEvent.
+for Ego Lite page.evaluate() to paste the image into the Milkdown ProseMirror
+editor using a synthetic binary ClipboardEvent.
 
 This bypasses system clipboard entirely — no headed mode or OS permissions needed.
 
@@ -13,10 +13,12 @@ Usage:
     python3 prepare_image.py /path/to/image.png --output /tmp/zsxq_paste_image.js
     python3 prepare_image.py /path/to/image.png --max-size 1500
 
-Then run (marker deletion is a SEPARATE step — see SKILL.md Step 6):
-    agent-browser --session-name zsxq eval "$(cat /tmp/zsxq_paste_image.js)"
+Then evaluate the generated code in the Ego Lite page (marker deletion is a
+SEPARATE step — see SKILL.md):
+    const js = await readFile("/tmp/zsxq_paste_image.js", "utf8")
+    await page.evaluate(js)
 
-Output JSON from eval: { ok, size }
+The page.evaluate() result is: { ok, size }
 """
 
 import argparse

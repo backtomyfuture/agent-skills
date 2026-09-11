@@ -3,8 +3,9 @@
 Prepare a Markdown Nice title-fill script.
 
 The generated JS fills the visible Ant Design "new article" modal title input
-and clicks the primary confirmation button. This avoids shell quoting problems
-when titles contain quotes, backticks, or other metacharacters.
+and clicks the primary confirmation button. Pass it to Ego Lite
+``page.evaluate()`` to avoid shell quoting problems when titles contain
+quotes, backticks, or other metacharacters.
 """
 
 import argparse

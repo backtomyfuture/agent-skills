@@ -1,275 +1,117 @@
 ---
 name: hna-leave-application
 description: >-
-  Submit a leave/休假 application (公文呈报) on the HNA internal HR portal
+  Submit or preview a leave/休假 application (公文呈报) on the HNA HR portal
   (hr.hna.net 休假申请 / LeaveApplicationLink.aspx). Use this skill whenever the
   user wants to 请假, 提交休假申请, 走年休假/补休/事假/病假流程, 呈报休假公文, "帮我申请休假",
-  "提交休假呈报", "填报休假公文", "报休假公文", pastes a leave note (a 请示意见 like
-  "因个人原因，申请X月X日至Y月Y日 休假…妥否，请领导批示"), or gives a file path with a
-  filing request — e.g. "根据 ~/Downloads/中心经理审批邮件.pdf，帮我填报休假公文" or
-  "根据这个文件帮我报休假" — where the file is the approval-email PDF (the leader's
-  approval reply, e.g. 同意呈报). The leave details (dates, days, 年休假 vs 补休)
-  are extracted from that same PDF — always from the NEWEST/topmost request in
-  it, since the thread contains older ones — and the PDF doubles as the form
-  attachment. It drives Chrome headlessly via agent-browser using the saved
-  `hna` profile (login state persisted via state.json). A visible window is
-  allowed only for the user's manual SSO login; launch, form filling, internal
-  screenshot checking, submission, and result verification remain headless. It
-  selects the 固化流程, fills dates/type/reason/handover/请示意见, attaches the
-  approval PDF, self-checks a screenshot, and submits after the user
-  explicitly requests it. Trigger even
-  if the user doesn't name the system explicitly — any HNA leave-filing request
-  applies.
+  "提交休假呈报", "填报休假公文", "报休假公文", or gives an approval-email PDF. The
+  newest/topmost approved request supplies the leave details and the PDF is
+  attached to the form. The workflow uses Ego Browser: it hands off the
+  isolated HNA tab for manual SSO login only, then resumes the same task space
+  to select the flow, fill the form, attach the PDF, and verify it. Submission
+  occurs only after the user explicitly requests it.
 ---
 
-# HNA 休假申请呈报 (hna-leave-application)
+# HNA 休假申请呈报
 
-Automates the full leave-application workflow on the HNA HR portal:
-launch → login check → 固化流程 → fill form → attach PDF → submit → verify.
+Use Ego Browser, not `agent-browser`, Chrome CDP, saved browser-state files, or
+custom browser processes. Ego Lite isolates this workflow from the user's usual
+browser. A missing or expired SSO session is normal: hand the HNA page to the
+user to log in, then resume the **same** task space.
 
-The page is an old ASP.NET form (jQuery + WdatePicker + layui). The scripts in
-`scripts/` encode the exact, hard-won way to drive it reliably — read the
-"Gotchas" section before changing anything.
+## Inputs and safety rules
 
-## Inputs you collect from the user
+The standard input is the manager-approval email exported as a PDF. It supplies
+the values below and is also the required attachment:
 
-The usual input is **the approval-email PDF** (中心经理审批邮件.pdf — the leader's
-"同意呈报" reply, printed to PDF from Outlook). That one file serves as both the
-data source (the user's original 请示 draft is quoted inside it) and the form
-attachment. Alternatively the user may paste their draft 请示意见 as text and
-just confirm the PDF exists. Either way you derive these values:
+| Field | Rule |
+| --- | --- |
+| Dates and duration | Read only the newest request directly below the topmost approval. Cross-check its email subject. |
+| Leave type | Map `倒休` to `补休`; use the portal's exact option text for other leave types. |
+| Flow | Default `倒休流程` for 补休 and `年休假流程` for 年休假. Require an explicit flow for other leave types. |
+| Period | `全天` by default. A multi-day request with specified daily hours stays `全天`; preserve its hours in 请示意见. |
+| Reason / handover | `个人原因。` and `工作自带。` unless the user gives replacements. |
+| 请示意见 | Use only the factual request text. The staging script adds `各位领导，`, four-space indentation, and the attachment line. |
 
-| Variable | 含义 | How to derive |
-|---|---|---|
-| `BEGIN_DATE` | 起始时间 | `yyyy-MM-dd`, parsed from "X月X日". Year = the 年度 mentioned, else current year. |
-| `END_DATE` | 结束时间 | `yyyy-MM-dd`, the end of the range. Single-day → same as begin. |
-| `LEAVE_TYPE` | 类型 | Read from the request text: "使用X年度年休假N天" → `年休假`; mentions 补休 → `补休`. These are the user's two normal cases and both are exact option texts in the 类型 select. Other words map to their option (事假/短病假/婚假/丧假/探亲假…). |
-| `FLOW_NAME` | 固化流程 | 可显式指定；补休默认 `倒休流程`，年休假默认 `年休假流程`，其他假种必须明确提供。 |
-| `PERIOD` | 休假时段 | `全天` by default. Use `上半天`/`下半天` only if the user says half-day or the duration is ≤ 4 hours. Half-day only applies to single-day requests. |
-| `REASON` | 休假原因 | Fixed: `个人原因。` |
-| `HANDOVER` | 工作交接情况 | Fixed: `工作自带。` |
-| `ADVICE_BODY` | 请示意见正文 | 仅填写事实正文；不含称呼、缩进和附件行。 |
-| `ADVICE_GREETING` | 请示称呼 | 可选，默认 `各位领导，`。 |
-| `ATTACH_PATH` | 附件 | 审批邮件 PDF 的绝对路径；标准模板和附件验证均必填。 |
-| `ATTACH_LABEL` | 附件显示名 | 可选，默认取附件文件名（去扩展名）。 |
+Normalize extracted PDF text with NFKC before parsing. Restore Chinese
+punctuation in the final 请示意见. Never use a historical request without calling
+out that its leave dates have passed and getting the user's explicit test-only
+approval.
 
-公文标题 is auto-generated by the page (e.g. "关于傅强年休假的休假申请") — do not set it.
+Never submit during a preview or filling request. Do not use a system's
+"撤回" capability as a substitute for the user's submission authorization.
 
-### Extracting the leave details from the PDF
+## Stage a form without submitting
 
-```bash
-python3 - "$HOME/Downloads/中心经理审批邮件.pdf" <<'PY'
-import sys, unicodedata, subprocess
-t = subprocess.run(['pdftotext', sys.argv[1], '-'], capture_output=True, text=True).stdout
-print(unicodedata.normalize('NFKC', t)[:2500])
-PY
-```
-
-Read the output and pull the dates/days/type from the 请示 paragraph. Gotchas
-that WILL bite if skipped:
-
-- **NFKC normalization is mandatory.** The PDF's font maps some hanzi to
-  Kangxi-radical lookalikes (`⽉` U+2F49 instead of `月` U+6708, same for
-  ⽇/⼈/⾄…), so pattern-matching the raw text silently fails. NFKC folds them
-  back — but it also folds full-width punctuation to half-width (`，` → `,`),
-  so **restore proper full-width ，。 when composing the ADVICE_BODY text**; never
-  copy half-width punctuation into the form.
-- **Only the NEWEST request counts.** The PDF is a print of an ever-growing
-  reply thread: every past leave request (older months, different dates,
-  different 年度) is quoted below the current one, and the user reuses the same
-  file name each time. Filing an old request is the worst possible failure of
-  this skill.
-- **Anchor on the thread structure, not on names.** The salutation and the
-  approving leader can change between requests, so don't search for fixed
-  strings like "统总". The stable shape, newest-first, is: the **topmost
-  message is the leader's short approval reply** (e.g. "同意呈报。" — wording
-  may vary), and the **message quoted directly beneath it is the user's own
-  request** — the first block matching the content pattern 申请…休假，使用…N天.
-  That first request block is the one to file; everything below it is history.
-- **Cross-check against the email 主题 line** of the outermost reply (e.g.
-  "关于傅强6月15日至6月17日年休假的申请") — subject and newest request always
-  describe the same leave. If they disagree, or the newest request's dates are
-  already in the past, stop and ask the user instead of guessing.
-- Confirm the approval reply is actually present at the top (no approval → ask
-  the user before filing).
-
-### 生成请示意见（ADVICE_BODY）
-
-调用脚本时只能传入 `ADVICE_BODY`：它仅包含经 PDF 核实的事实正文，不含邮件称呼、行首空格或附件行。`ADVICE` 旧参数已禁止使用，防止未经模板化的文本进入表单。
-
-`scripts/fill_form.sh` 会统一生成：
-
-```text
-各位领导，
-    {每一条非空正文，均为 4 个 ASCII 空格缩进}
-附件：{从 ATTACH_PATH 推导的名称，或 ATTACH_LABEL}
-```
-
-先使用 `HNA_FORMAT_ADVICE_ONLY=1` 做离线预览并逐字核对；确认称呼、缩进、中文标点和附件行无误后，才连接门户。
-
-## Workflow
-
-### 1. Launch & login check
+1. Read and verify the PDF. Confirm the topmost reply approves the newest
+   request. Derive `leaveType`, `flowName`, dates, and `adviceBody`.
+2. Start an Ego task space and execute the stage helper. It opens the leave
+   form and reports either `login_required` or `filled_preview`.
 
 ```bash
-bash scripts/launch.sh
+ego-browser nodejs <<'EOF'
+import { stage } from "/Users/jarod/Documents/agent-skills/skills/hna-leave-application/scripts/stage.mjs";
+
+await stage({
+  attachmentPath: "/absolute/path/中心经理审批邮件.pdf",
+  leaveType: "补休",
+  flowName: "倒休流程",
+  beginDate: "2026-09-01",
+  endDate: "2026-09-03",
+  period: "全天",
+  adviceBody: [
+    "因个人原因，申请9月1日、2日、3日每天下午4:30至5:30休假1小时，使用8月倒休3小时。",
+    "使用前8月倒休共计8小时，本次使用3小时，使用后剩余5小时。",
+    "原有开发工作已妥善安排，均按照正常计划开展，休假期间，工作自带。",
+    "妥否，请领导批示。",
+  ].join("\n"),
+});
+EOF
 ```
 
-Chrome runs **strictly headless for the normal workflow** (`--headless=new`):
-launch, login-state restoration, form filling, screenshot self-check,
-submission, and result verification all use the headless CDP session. There is
-no normal-flow headed override. The sole exception is a manual SSO login:
-`launch.sh` opens a headed login window only after it detects `NOT_LOGGED_IN`.
-
-Login state lives in the `hna` profile as `~/.agent-browser/profiles/hna/state.json`
-(saved with `agent-browser state save`). The HNA SSO cookies are session cookies,
-so the Chrome profile dir alone forgets them when Chrome exits — `launch.sh`
-loads `state.json` only into a headless session before navigating and re-saves
-it on every logged-in run. After a manual login, it saves the fresh state,
-closes the headed window, restarts headless Chrome, and re-verifies both SSO
-checks before it emits `READY`.
-
-`READY` means two things were verified, not one: the hr.hna.net form is open,
-AND an oa3.hnair.net SSO probe passed. The 固化流程 picker lives on
-oa3.hnair.net behind the login.hnagroup.com SSO master session, which
-idle-expires after ~30 min — while the form itself still opens fine from
-hr.hna.net's own cookies. Probing at launch catches this up front instead of
-failing mid-fill.
-
-- Exit `0` / `READY` → logged in (both checks passed), parked on the form,
-  state.json refreshed. Continue.
-- Exit `10` / `NOT_LOGGED_IN` → login/SSO expired. **Stop and tell the user to
-  log in.** `launch.sh` has already replaced the headless instance with a
-  visible window parked on the 统一登录平台 login page. Ask them to enter their
-  domain account + password there, then re-run `launch.sh`. On success it saves
-  the new state, closes that headed window, restarts headless Chrome, verifies
-  the form plus oa3 SSO again, and only then returns `READY`. Do not fill or
-  submit while the visible login window is open.
-- Exit `11` / `UNKNOWN` → report the URL and ask how to proceed.
-
-If anything looks stuck or crashed, just re-run `launch.sh`; it kills stale
-instances on the port and relaunches.
-
-### 2. Fill the form
-
-当用户已经明确要求“呈报”或“提交”时，必须实际连续执行本节、无头截图自检和提交，
-不要仅展示命令、不要因正常页面核验而等待用户逐页确认。只有用户明确只要求填写或
-预览时，才停在未提交状态。
-
-Export the derived values and run the fill script (it does NOT submit):
+3. If the helper returns `login_required`, it has called `task.handOff()`.
+   Tell the user to log in in the Ego Lite tab. Once they confirm, continue
+   from the same task space:
 
 ```bash
-export HNA_CDP_PORT=9222
-export LEAVE_TYPE="补休"
-export FLOW_NAME="倒休流程"
-export BEGIN_DATE="2026-07-20"
-export END_DATE="2026-07-20"
-export PERIOD="全天"
-export REASON="个人原因。"
-export HANDOVER="工作自带。"
-export ATTACH_PATH="$HOME/Downloads/中心经理审批邮件.pdf"
-export ADVICE_BODY=$'因个人原因，申请……。\n余额……。\n原有工作已妥善安排。\n妥否，请领导批示。'
+ego-browser nodejs <<'EOF'
+import { stage } from "/Users/jarod/Documents/agent-skills/skills/hna-leave-application/scripts/stage.mjs";
 
-HNA_FORMAT_ADVICE_ONLY=1 bash scripts/fill_form.sh  # 先离线预览模板
-bash scripts/fill_form.sh                            # 通过后再填写，不会提交
+await stage({
+  taskSpaceId: <TASK_SPACE_ID>,
+  attachmentPath: "/absolute/path/中心经理审批邮件.pdf",
+  leaveType: "补休",
+  flowName: "倒休流程",
+  beginDate: "2026-09-01",
+  endDate: "2026-09-03",
+  period: "全天",
+  adviceBody: "<verified factual request text>",
+});
+EOF
 ```
 
-Exit `12` / `SSO_EXPIRED` means the 固化流程 popup bounced to the SSO login
-page (the session died between launch and fill) — re-run `launch.sh` and handle
-the login, then retry the fill.
+The helper opens the 固化流程 picker, selects the requested flow, accepts its
+confirmation dialog, uploads the PDF to the hidden file field, sets the
+dates/type/fields through the portal's jQuery and WdatePicker integration, and
+checks the visible attachment plus exact 请示意见 text. It saves a local screenshot
+for agent review, reports `submitted: false`, and hands the filled form to the
+user. Do not click 提交 in this flow.
 
-### 3. Verify the filled form (screenshot self-check)
+## Submit only after explicit approval
+
+Only after a user explicitly asks to submit the already reviewed form, reclaim
+the displayed task space and call:
 
 ```bash
-agent-browser --cdp 9222 screenshot --full /tmp/hna-filled.png
+ego-browser nodejs <<'EOF'
+import { submit } from "/Users/jarod/Documents/agent-skills/skills/hna-leave-application/scripts/submit.mjs";
+await submit({ taskSpaceId: <TASK_SPACE_ID> });
+EOF
 ```
 
-Read the screenshot internally and check: 固化流程 approval chain present, dates +
-可休假 N天, 类型, 休假原因/工作交接情况 (with the trailing 。), 请示意见 text, and the
-attachment row (中心经理审批邮件.pdf). 截图是无头会话内的 agent 自检，不打开有头
-窗口，也不要求用户逐字段确认。页面内容与请求一致且用户已明确要求呈报时，立即继续
-提交；有差异或用户仅要求预览时，才停在已填写状态并说明原因。撤回能力不替代用户的
-提交授权。
-
-> Note: the second approver in the 固化流程 chain is auto-assigned and can vary
-> between runs (e.g. 杨帆43 vs 邵彬2). Glance at it, but it's expected to change.
-
-### 4. Submit
-
-```bash
-bash scripts/submit.sh           # prints SUBMITTED (...) on success
-```
-
-`submit.sh` 输出 `SUBMITTED (post|toast|nav)` 后即已获得成功证据。随后它会按本技能
-专用的 CDP 端口关闭 HNA 自动化浏览器，并输出 `AGENT_BROWSER_CLOSED`；这不会影响
-其他 `agent-browser` 会话。清理失败只会告警，不能覆盖已确认的提交成功。应直接向用户返回该提交结果；不要为了额外确认而主动打开或浏览
-公文跟踪页。门户如自动跳转至公文跟踪页，属于提交后的系统行为，可作为补充证据；
-跳转后网络日志可能按标签页重置为空，不能据此判断提交失败。
-
-若已知有同日期、同内容的旧公文而用户未明确要求重新呈报，应先说明风险并询问；不能用公文跟踪“无搜索结果”推断旧公文不存在。用户明确要求重新呈报时，可以创建新公文，但不得擅自撤回旧公文。
-
-## Gotchas (why the scripts look the way they do)
-
-These were learned by live-driving the page; keep them in mind before editing.
-
-- **Launch Chrome yourself on a fixed CDP port, attach with `--cdp`.** The
-  agent-browser daemon silently ignores `--headed`/`--profile` when a daemon is
-  already running, and the headed window can crash and respawn headless. A
-  manual launch + `--cdp 9222` is reliable. `launch.sh` handles this.
-- **The SSO login cookies are session cookies.** The Chrome profile dir alone
-  does NOT keep you logged in across Chrome restarts. `launch.sh` persists the
-  login by loading `profiles/hna/state.json` only into a headless session
-  before navigating, then saving it again on every logged-in run. A fresh
-  manual-login state is saved before the temporary headed window is closed
-  and the workflow is restarted headless.
-- **"Form opens" ≠ "fully logged in".** The 固化流程 picker is on oa3.hnair.net
-  behind the login.hnagroup.com SSO master session (`IAM_SESSION`), which
-  idle-expires in ~30 min — long before hr.hna.net's own app cookies stop
-  opening the form. That's why `launch.sh` probes oa3 before reporting READY,
-  and why the state it saves includes oa3's own session cookies too.
-- **Headless is mandatory for every normal step; manual login is the sole
-  exception.** `--headless=new` drives window.open popups, confirm() dialogs,
-  and hidden-input uploads identically to headed (verified live). On an expired
-  SSO session, `launch.sh` temporarily opens a headed login window; after the
-  user logs in and the form + oa3 probe pass, it saves the new state, restarts
-  headless, and checks again before `READY`. To detect a headless instance,
-  check CDP `/json/version` for `HeadlessChrome` — ps-grepping for `--headless`
-  is fragile (the grep pipeline self-matches).
-- **`--disable-popup-blocking` is mandatory** (set in `launch.sh`). The 固化流程
-  button opens its picker via `window.open()`.
-- **Buttons with JS handlers must be clicked via page-context `.click()`, not
-  CDP/ref clicks.** Both 固化流程 (`#btnFixedFlow`) and 提交 (`onclick=checkFormMain()`)
-  do nothing on a ref/CSS click — the handler/`window.open` simply doesn't fire.
-  Calling the element's own `.click()` (or the handler directly) via
-  `agent-browser eval` works every time.
-- **不要独立调用 `checkForm()` 做预览。** 它会显示近似提交的覆盖层；`checkFormMain()` 会在一次正式提交中完成相同校验。
-- **The 选择 link inside the flow popup IS fine to click via CSS selector** — it
-  triggers a `confirm()` dialog (not `window.open`), which you clear with
-  `agent-browser dialog accept`. A confirm fired from inside `eval` would block,
-  so tag the link in JS but click it with agent-browser.
-- **Each `agent-browser --cdp` call re-resolves the active tab**, so manage tabs
-  explicitly: `fill_form.sh` locks the `LeaveApplicationLink.aspx` form tab, then
-  accepts only a newly opened `OA/Workflow/Process/MyFlow.aspx` tab as the flow
-  picker. An unrelated oa3 page such as 公文跟踪 must never be treated as the popup.
-- **The flow list loads via AJAX** — poll for the selected `FLOW_NAME` row before
-  tagging it; `networkidle` alone is too early. 补休默认 `倒休流程`，年休假默认 `年休假流程`。
-- **Attachment = a hidden `<input name=filedata>`.** Set the file directly on it
-  with `agent-browser upload "input[name=filedata]" <path>` — no OS file dialog.
-  Do not trust its DOM value; verify the visible attachment list contains the PDF filename.
-- **Dates use WdatePicker.** Set `.tbBeginDate`/`.tbEndDate` values via jQuery,
-  then call `WdPicker.call($('.tbEndDate')[0])` to recompute 可休假 days and
-  validate order.
-- **Form field selectors:** 休假原因 = `textarea.DESCR200`, 工作交接情况 =
-  `textarea.DESCR254`, 请示意见 = `textarea[name="ctl00$MainContentPortal$tbRPTCMMT"]`,
-  类型 = `.tbType` `<select>`.
-- **SSO login is an async bounce** (login.hnagroup.com → ssocallback → form).
-  `launch.sh` polls ~15s before declaring NOT_LOGGED_IN.
-
-## Files
-
-- `scripts/launch.sh` — launch and verify headless Chrome (hna profile, CDP
-  9222), restore/save login state, and verify form + oa3 SSO. It opens a
-  headed window only for manual SSO login, then saves the new state and
-  restarts headless before returning `READY`; `HNA_HEADED` is not supported.
-- `scripts/fill_form.sh` — 标准请示模板、流程选择、附件可见性校验与字段填写；不提交。
-- `scripts/submit.sh` — 先锁定休假表单，再调用 `checkFormMain()`；验证成功并防止同一会话重复提交，成功后关闭本技能专用的 CDP 自动化浏览器。
+The submit helper blocks repeated submission in the same document, invokes the
+portal's `checkFormMain()` exactly once, then requires navigation to the
+expected tracking/result page after it finishes loading. It captures that
+returned page locally and reports its title, URL, and visible text summary
+before reporting success. The returned page remains open in Ego Lite for the
+user to inspect.

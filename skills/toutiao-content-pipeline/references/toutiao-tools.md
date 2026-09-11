@@ -19,7 +19,8 @@ Useful ideas:
 Limitations for this local skill:
 
 - ClawHub marks the skill as suspicious in security scans, so do not install or execute it blindly.
-- It is written for a different browser automation interface (`browser act` / `evaluate`), not this environment's `agent-browser` command style.
+- It is written for a different browser automation interface (`browser act` /
+  `evaluate`), not this skill's Ego Lite TaskSpace API.
 - It emphasizes final publishing; this local skill defaults to staged/autosaved.
 
 Decision: borrow the image/cover ideas and dynamic-ref caution, but keep our local implementation.
@@ -58,13 +59,18 @@ Useful ideas:
 Limitations for this local skill:
 
 - The upstream README describes immediate automatic publishing as a normal path; this local skill defaults to staged/autosaved review and requires explicit confirmation before final publish.
-- The upstream implementation uses Selenium; this local skill should not use Selenium and should stay on `agent-browser` unless the user explicitly changes that constraint.
+- The upstream implementation depends on a different browser runtime; this
+  local skill should stay on the Ego Lite TaskSpace API unless the user
+  explicitly changes that constraint.
 - The upstream article generation path is DeepSeek prompt based and uses 46LA hot topics; this skill keeps the stricter multi-source brief and verification contract.
-- Upstream cookie export is a convenience path, but this skill keeps login user-managed unless the user explicitly provides a cookie file/profile.
+- Upstream cookie export is a convenience path, but this skill keeps login
+  user-managed and never imports browser credentials or saved state.
 - Upstream `markdown_to_html()` is intentionally simple and does not preserve local Markdown image markers; this skill keeps `payload.json` as the source of truth for local images.
 - Upstream cover generation depends on Tencent Hunyuan credentials; this skill defaults to local HTML card visuals to avoid extra external API dependencies.
 
-Decision: borrow only the workflow concepts (selector fallback, ProseMirror DOM path, publish-step separation, duplicate-publish records, interval awareness). Do not adopt Selenium as the execution layer.
+Decision: borrow only the workflow concepts (selector fallback, ProseMirror DOM
+path, publish-step separation, duplicate-publish records, interval awareness).
+Do not adopt that upstream runtime as the execution layer.
 
 ### Official Open API
 

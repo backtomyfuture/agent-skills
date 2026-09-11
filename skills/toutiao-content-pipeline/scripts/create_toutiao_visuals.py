@@ -254,6 +254,7 @@ def main() -> int:
         "source_file": str(source),
         "draft_with_visuals": str(draft_with_visuals),
         "min_images": args.min_images,
+        "renderer_script": str(Path(__file__).with_name("render_toutiao_visuals.mjs").resolve()),
         "visuals": [
             {
                 "id": spec["id"],
@@ -261,7 +262,12 @@ def main() -> int:
                 "html_file": str(spec["html"]),
                 "png_file": str(spec["png"]),
                 "open_url": file_url(spec["html"]),
-                "render_command": f"agent-browser --session-name toutiao-visual --allow-file-access open '{file_url(spec['html'])}' && agent-browser --session-name toutiao-visual screenshot '#card' '{spec['png']}'",
+                "render_command": (
+                    "ego-browser nodejs <<'EOF'\n"
+                    f"import {{ render }} from {json.dumps(str(Path(__file__).with_name('render_toutiao_visuals.mjs').resolve()))};\n"
+                    f"await render({{ planPath: {json.dumps(str(output_dir / 'visual_plan.json'))} }});\n"
+                    "EOF"
+                ),
             }
             for spec in specs
         ],

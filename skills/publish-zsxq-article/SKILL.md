@@ -1,380 +1,175 @@
 ---
 name: publish-zsxq-article
-description: Publish an article to Zsxq (知识星球 / wx.zsxq.com) as a scheduled post for the next day, from either a Notion page URL or a local Markdown file. ALWAYS use this skill whenever the user mentions 知识星球, 星球, zsxq, wx.zsxq, 星球文章, 发到星球, 发布到知识星球, publish to Zsxq, post to Zsxq, or asks to turn a Notion page / Markdown file / article note into a Zsxq post — even if they don't explicitly say "schedule" or "定时". Handles Notion-page ingest (fetches Markdown via MCP, downloads inline images, preserves image positions), Markdown parsing, image insertion via synthetic ClipboardEvent, and scheduled publish. Never publishes instantly; always schedules for a later time so the user can review in "我的文章" before the post goes live.
+description: >-
+  Stage and, after explicit authorization, schedule an article in Zsxq
+  (知识星球 / wx.zsxq.com) for tomorrow at 10:00 from a Notion page or local
+  Markdown file. Use whenever the user asks to publish an article to Zsxq,
+  知识星球, 星球文章, or wx.zsxq.com. The workflow always uses Ego Lite and
+  never performs an instant publish.
 ---
 
-# Publish Zsxq Article
+# Publish a Zsxq Article
 
-Publish an article to the Zsxq (知识星球) article editor in Markdown mode and schedule it for the next day. The source is either a Notion page (via URL) or a local Markdown file. The skill never publishes instantly — it always schedules the post for a later time, which is functionally a draft until that time arrives and gives the user a window to review in "我的文章" before it goes live.
+This skill prepares an article in the Zsxq Milkdown/ProseMirror editor, hands
+the page to the user for review, and only schedules it after the user explicitly
+authorizes scheduling. Scheduling for tomorrow at 10:00 is the only submit path;
+never click a button whose exact text is `发布`.
 
-The editor is a Milkdown/ProseMirror WYSIWYG that parses Markdown only when it arrives via a paste event. So the whole skill is structured around constructing the right paste events and dispatching them at the right moments. Helper Python scripts build those events for us so we don't have to wrestle with JS escaping in the shell.
+The workflow uses one Ego Lite TaskSpace for the entire run. If login is
+needed, the stage helper reports `login_required`, hands off that TaskSpace,
+and the next stage call must use the returned `taskSpaceId`. Do not create a
+second TaskSpace for login or recovery.
+
+## Configuration
+
+This skill is tuned for the `AI 一天` group:
+
+- Group ID: `88882188185282`
+- Article URL: `https://wx.zsxq.com/article?groupId=88882188185282`
+- Login URL: `https://wx.zsxq.com/login`
+
+If the user requests another group, confirm its group ID before proceeding.
+
+## Safety boundary
+
+- `scripts/stage.mjs` only stages content and hands off the filled page. It
+  always reports `submitted: false`.
+- `scripts/submit.mjs` may be called only after the user explicitly authorizes
+  scheduling the reviewed page.
+- The submit helper enables scheduling, sets tomorrow at 10:00, verifies the
+  exact button text `定时发布`, and only then clicks. It refuses every other
+  button text, especially `发布`.
+- A click with no observable success is reported as
+  `click_sent_unverified`; it is never retried.
+- Do not click `保存`, navigate away to create a separate draft, or submit
+  while staging. The scheduled article remains reviewable in `我的文章`.
 
 ## Prerequisites
 
-- [agent-browser](https://github.com/agent-browser/agent-browser) CLI (`npm i -g agent-browser && agent-browser install`)
-- Python 3 for the helper scripts in `scripts/`
-- Optional: `Pillow` (only needed if you plan to insert large images that need compression)
+- Ego Lite (`ego-browser` command)
+- Python 3 for the preparation helpers
+- Optional: Pillow for resizing very large images
 
-## Group configuration
+## Prepare source content
 
-The skill always publishes to the "AI 一天" group:
-
-- **Group ID:** `88882188185282`
-- **Editor URL:** `https://wx.zsxq.com/article?groupId=88882188185282`
-- **Login URL:** `https://wx.zsxq.com/login`
-
-If the user mentions a different group, stop and confirm the group ID with them before proceeding — the skill is tuned for this one group.
-
-## Helper scripts
-
-All scripts live in this skill's `scripts/` directory. Use absolute paths when invoking them:
-
-- `/Users/jarod/.agents/skills/publish-zsxq-article/scripts/notion_ingest.py` — takes raw Markdown from the Notion MCP `notion-fetch` tool, downloads all inline images locally, and rewrites references to local paths while preserving positions.
-- `/Users/jarod/.agents/skills/publish-zsxq-article/scripts/prepare_content.py` — preprocesses Markdown and writes a paste-ready JS file.
-- `/Users/jarod/.agents/skills/publish-zsxq-article/scripts/prepare_image.py` — base64-encodes an image and writes a paste-ready JS file.
-
-## Windows notes
-
-PowerShell 5 and Windows process argument limits are the two common traps:
-
-- Read local Markdown with explicit UTF-8 if you inspect or copy it in PowerShell (`Get-Content -Raw -Encoding UTF8`). The scripts read Markdown as `utf-8-sig`, so a UTF-8 BOM will not leak into the title/body.
-- Do not pass paste JS containing Chinese text directly as a command argument on Windows. It can arrive in the browser as mojibake. Use `agent-browser eval -b` with UTF-8 base64 for content paste.
-- Large screenshots can produce a JS payload that exceeds Windows command-line limits. `prepare_image.py` now detects this and, on Windows, resizes/compresses through Pillow or a PowerShell `System.Drawing` fallback before writing paste JS. If both fail, install Pillow with `python -m pip install Pillow` or intentionally re-run with `--allow-large-inline`.
-- Notion/Markdown image links may be written as `![](<./media/image.png>)`; `prepare_content.py` normalizes the angle brackets before resolving the local file.
-
-## Workflow
-
-The skill runs four pipelines in order. The first two are always required; the image pipeline only runs when the article has images; the publish pipeline always runs last.
-
-1. **Pre-flight** — clean up any leftover browser session and confirm we're logged into Zsxq.
-2. **Content pipeline** — if the source is a Notion URL, fetch it and localize its images first. Then prepare the Markdown, open the editor in Markdown mode, fill the title, and paste the body.
-3. **Image pipeline** — for each image the content pipeline extracted, delete its placeholder marker and paste the real image into the cursor position.
-4. **Publish pipeline** — schedule the post for tomorrow 10:00. No separate "save draft" step: a scheduled post is functionally a draft until its publish time, so saving first would be redundant and slows the run.
-
-## Pre-flight
-
-### Clean up leftover sessions
-
-agent-browser maintains a background daemon per session. If a previous headless daemon is still running, it silently refuses to upgrade to headed mode, which makes later login-debugging painful. Close everything once at the start:
+For a Notion URL, fetch it with the authenticated Notion tool before browser
+work. Write the returned Markdown to `/tmp/zsxq-notion/raw.md`, then localize
+its images:
 
 ```bash
-agent-browser close --all
+mkdir -p /tmp/zsxq-notion
+python3 /Users/jarod/Documents/agent-skills/skills/publish-zsxq-article/scripts/notion_ingest.py \
+  --input /tmp/zsxq-notion/raw.md \
+  --output-dir /tmp/zsxq-notion
 ```
 
-Do this only once per skill invocation. Don't loop.
+Inspect the JSON summary. If `failed_count` is nonzero, stop and ask whether
+to re-fetch the Notion page for fresh signed URLs or proceed with the missing
+images skipped. Never silently stage an article with broken image references.
 
-### Open the editor and check login in one shot
-
-Prefer opening the editor URL directly rather than the login page. If the session is valid you're already where you need to be; if it's expired Zsxq redirects to `/login`, which is an equally clear signal.
-
-First check whether a persistent Chrome profile exists — it's more reliable than state JSON because it carries the real Chrome cookie jar:
+For a local Markdown file, use it directly. Then generate the body code:
 
 ```bash
-ls ~/.agent-browser/profiles/zsxq/ 2>/dev/null && echo "PROFILE_FOUND"
+python3 /Users/jarod/Documents/agent-skills/skills/publish-zsxq-article/scripts/prepare_content.py \
+  '/absolute/path/article.md' \
+  --output /tmp/zsxq_paste_content.js
 ```
 
-Open with the profile if available, without otherwise:
+The summary contains `title`, `js_file`, and ordered `images`. The helper
+extracts the first H1 (or filename), replaces images with `[[IMG_N]]` markers,
+and emits code for a synthetic `ClipboardEvent`. Do not edit the source file.
+
+For each image with a non-null `resolved_path`, generate a distinct image code
+file and pass its path with the matching marker to the stage helper:
 
 ```bash
-# With profile
-agent-browser --headed true --session-name zsxq --profile ~/.agent-browser/profiles/zsxq/ open "https://wx.zsxq.com/article?groupId=88882188185282"
-
-# Without profile
-agent-browser --headed true --session-name zsxq open "https://wx.zsxq.com/article?groupId=88882188185282"
+python3 /Users/jarod/Documents/agent-skills/skills/publish-zsxq-article/scripts/prepare_image.py \
+  '/absolute/path/image.png' \
+  --output /tmp/zsxq_paste_image_1.js
 ```
 
-On Windows, create and use the profile with PowerShell paths:
+If a `resolved_path` is null, do not call stage with its marker still in the
+body. Ask whether to re-fetch the Notion page or proceed without that image;
+for the latter, remove that failed image reference from the scratch
+`/tmp/zsxq-notion/article.md`, rerun `prepare_content.py`, and regenerate the
+remaining image code files. Never modify the user's original source. Image code
+contains the binary paste operation only.
 
-```powershell
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agent-browser\profiles\zsxq" | Out-Null
-agent-browser --headed true --session-name zsxq --profile "$env:USERPROFILE\.agent-browser\profiles\zsxq" open "https://wx.zsxq.com/article?groupId=88882188185282"
-```
+## Stage in Ego Lite
 
-Then check login state in a single eval. The title input only exists on the editor page, and a redirect to `/login` shows up in `location.href`:
+Run the helper inside `ego-browser nodejs`; it creates or reclaims one
+TaskSpace, opens the article URL, detects login, switches to Markdown mode,
+dismisses `忽略`, fills the title, and evaluates the generated body code in the
+page:
 
 ```bash
-agent-browser wait 3000
-agent-browser --session-name zsxq eval '(() => { const hasTitle = !!document.querySelector("input[placeholder=请在这里输入标题]"); const url = location.href; return { loggedIn: hasTitle && !url.includes("/login"), url }; })()'
+ego-browser nodejs <<'EOF'
+import { stage } from "/Users/jarod/Documents/agent-skills/skills/publish-zsxq-article/scripts/stage.mjs";
+
+await stage({
+  title: "Title from prepare_content.py",
+  bodyJsPath: "/tmp/zsxq_paste_content.js",
+  images: [
+    {
+      marker: "[[IMG_1]]",
+      pasteJsPath: "/tmp/zsxq_paste_image_1.js",
+    },
+  ],
+});
+EOF
 ```
 
-If `loggedIn` is true, continue to the content pipeline. If false, walk the user through the manual login flow in [`references/troubleshooting.md`](references/troubleshooting.md#login-problems), then resume here. Check only once — looping doesn't help when the problem is an expired session.
+The image loop is intentionally three separate page actions for every image:
 
-## Content pipeline
+1. `page.evaluate()` deletes the marker through ProseMirror's transaction.
+2. `page.waitForTimeout(500)` lets ProseMirror synchronize its selection.
+3. `page.evaluate()` evaluates the generated binary image code.
 
-### If the source is a Notion URL, ingest it first
+The helper verifies the ProseMirror body, confirms there are no remaining
+markers, checks the visible image count, writes a screenshot under
+`/tmp/zsxq-article/`, prints `status: "staged"` and `submitted: false`, then
+hands off the page.
 
-When the user gives you a Notion page link (e.g. `https://www.notion.so/workspace/Article-Title-abc123`), you need to convert it into a local Markdown file plus local image files before `prepare_content.py` can do its job. Zsxq's Milkdown editor only accepts image uploads via binary paste, so every image referenced in the post must exist on disk.
-
-Two calls do this:
-
-1. Fetch the page via the Notion MCP tool:
-
-   ```
-   notion___notion-fetch(id="<the Notion URL or page UUID>")
-   ```
-
-   This returns the page body as enhanced Markdown. Extract the article body from the response — strip any leading property blocks, `<page-discussions>` tags, or similar wrappers the MCP adds around the actual content. What you want is the Markdown the author wrote, with `![alt](url)` image references pointing at Notion's signed URLs.
-
-2. Pipe that Markdown into `notion_ingest.py`, giving it an output directory:
-
-   ```bash
-   mkdir -p /tmp/zsxq-notion
-   # Write the extracted Markdown to /tmp/zsxq-notion/raw.md first, then:
-   python3 /Users/jarod/.agents/skills/publish-zsxq-article/scripts/notion_ingest.py \
-     --input /tmp/zsxq-notion/raw.md \
-     --output-dir /tmp/zsxq-notion
-   ```
-
-   The script downloads every remote image into the output directory and rewrites the Markdown so each `![alt](url)` becomes `![alt](img_N.ext)` at the same position. Image ordering and position within the text are preserved — this matters because they're what the image pipeline later uses to anchor each image to its intended spot in the post.
-
-   The JSON summary tells you which images downloaded successfully and which failed (expired signed URLs, network errors, etc.). If `failed_count > 0`, stop and ask the user whether to re-fetch the Notion page (signed URLs are time-limited) or to skip the missing images.
-
-From here on, treat `/tmp/zsxq-notion/article.md` exactly like any other local Markdown file and continue with `prepare_content.py` below.
-
-### Prepare the Markdown
-
-`prepare_content.py` does several things in one pass so the rest of the skill can be dumb: strips Notion export metadata, extracts the title from the first H1 (or falls back to the filename), replaces image references with `[[IMG_N]]` placeholders and records their resolved paths, and emits a self-contained JS file that dispatches the right synthetic paste event.
-
-Always single-quote the path so the shell doesn't try to expand `&`, spaces, or other metacharacters:
+If it prints `login_required`, ask the user to log in in the handed-off Ego
+Lite tab. After the user confirms login, resume the **same** TaskSpace:
 
 ```bash
-python3 /Users/jarod/.agents/skills/publish-zsxq-article/scripts/prepare_content.py '/path/to/article.md'
+ego-browser nodejs <<'EOF'
+import { stage } from "/Users/jarod/Documents/agent-skills/skills/publish-zsxq-article/scripts/stage.mjs";
+
+await stage({
+  taskSpaceId: 123,
+  title: "Title from prepare_content.py",
+  bodyJsPath: "/tmp/zsxq_paste_content.js",
+  images: [],
+});
+EOF
 ```
 
-For a Notion-sourced article, that path is `/tmp/zsxq-notion/article.md`.
+Use the actual `taskSpaceId` from the prior JSON output. Do not repeat the
+initial navigation in a new TaskSpace.
 
-If the path is a directory (common for Notion exports), the script auto-selects the lone `.md` file, or lists options when there are multiple. The JSON summary it prints to stdout is the source of truth for the rest of the run:
+## Schedule only after explicit authorization
 
-```json
-{
-  "title": "My Article Title",
-  "source_file": "/path/to/dir/article.md",
-  "content_chars": 5432,
-  "js_file": "/tmp/zsxq_paste_content.js",
-  "images": [
-    {"index": 1, "marker": "[[IMG_1]]", "src": "img1.png", "resolved_path": "/path/to/dir/img1.png"}
-  ]
-}
-```
-
-Hold on to `title` for the title-fill step and `images` for the image pipeline.
-
-### Switch the editor to Markdown mode
-
-Pasting Markdown into Quill leaves the hash signs and asterisks as literal text. Switch to Milkdown first. Use JS rather than `find text` because several buttons share similar labels:
+After the user reviews the handed-off page and explicitly asks to schedule it,
+reclaim the same TaskSpace:
 
 ```bash
-agent-browser --session-name zsxq eval '(() => {
-  const hasPM = !!document.querySelector(".ProseMirror");
-  const hasQuill = !!document.querySelector(".ql-editor");
-  const toggleText = document.querySelector(".toggle-mode")?.textContent?.trim() || "";
-  if (!hasPM && hasQuill && toggleText.includes("Markdown")) {
-    document.querySelector(".toggle-mode")?.click();
-    setTimeout(() => document.querySelector(".confirm")?.click(), 500);
-  }
-  return { hasPM, hasQuill, toggleText };
-})()'
+ego-browser nodejs <<'EOF'
+import { submit } from "/Users/jarod/Documents/agent-skills/skills/publish-zsxq-article/scripts/submit.mjs";
 
-agent-browser wait 2000
-agent-browser --session-name zsxq eval '!!document.querySelector(".ProseMirror")'
+await submit({ taskSpaceId: 123 });
+EOF
 ```
 
-The last check must return `true` before moving on.
+The helper uses the existing flatpickr date input and Zsxq time-picker lists,
+sets tomorrow at 10:00, verifies the exact text `定时发布`, and clicks once.
+On success it reports the scheduled date/time and keeps the result page open.
+On an unverified click it reports an error and does not retry.
 
-### Dismiss the restore-draft popup if it appears
+## Troubleshooting
 
-After switching modes (or on a fresh load), Zsxq sometimes offers to "恢复上次编辑的内容". Clicking it would wipe the fresh content you're about to paste. Dismiss it by matching the exact text `忽略`:
-
-```bash
-agent-browser --session-name zsxq eval '(() => {
-  const btn = Array.from(document.querySelectorAll("button, .cancel, .btn")).find(
-    el => el.textContent && el.textContent.trim() === "忽略"
-  );
-  if (btn) { btn.click(); return "dismissed"; }
-  return "no popup";
-})()'
-```
-
-If the element isn't found, no popup is on screen. Move on.
-
-### Fill the title
-
-Snapshot to find the ref, then fill. The title input is keyed by its placeholder:
-
-```bash
-agent-browser --session-name zsxq snapshot -i
-agent-browser --session-name zsxq find placeholder "请在这里输入标题" fill "<TITLE FROM STEP 1>"
-```
-
-### Paste the body
-
-Dispatch the JS file that `prepare_content.py` wrote. This fires the synthetic paste event that Milkdown intercepts and parses as Markdown:
-
-```bash
-agent-browser --session-name zsxq eval "$(cat /tmp/zsxq_paste_content.js)"
-```
-
-On Windows/PowerShell, use UTF-8 base64 so Chinese text does not become mojibake:
-
-```powershell
-$js = Get-Content -Raw -Encoding UTF8 -Path "C:\tmp\zsxq_paste_content.js"
-$b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($js))
-agent-browser --session-name zsxq eval -b $b64
-```
-
-Don't use `fill` or `type` here — those bypass the paste handler, leaving raw Markdown on the page.
-
-Verify the body was inserted:
-
-```bash
-agent-browser --session-name zsxq eval 'document.querySelector(".ProseMirror")?.textContent?.length || 0'
-```
-
-A non-zero length means the paste took.
-
-## Image pipeline
-
-Skip this entire section when `prepare_content.py` reported an empty `images` array.
-
-For each image in order, run three commands: delete the placeholder marker, wait for ProseMirror to sync its internal selection, then paste the image. They must be three separate calls — combining them causes images to land at the wrong cursor position. The reason is explained in [`references/editor-internals.md`](references/editor-internals.md#why-image-insertion-has-to-be-three-separate-eval-calls).
-
-Before the loop, generate the paste JS for each image:
-
-```bash
-python3 /Users/jarod/.agents/skills/publish-zsxq-article/scripts/prepare_image.py '<resolved_path>'
-```
-
-On Windows, Pillow is recommended before publishing posts with large screenshots. If it is not installed, the helper will try a PowerShell `System.Drawing` fallback:
-
-```powershell
-python -m pip install Pillow
-python C:\Users\<you>\.agents\skills\publish-zsxq-article\scripts\prepare_image.py '<resolved_path>'
-```
-
-Then, for each marker (e.g. `[[IMG_1]]`, `[[IMG_10]]`), run this three-step sequence. Replace both occurrences of `[[IMG_N]]` in command 1 with the real marker string; the length is derived from the string itself, so double- and triple-digit indices work:
-
-```bash
-# 1. Delete the marker at its position
-agent-browser --session-name zsxq eval '(() => {
-  const marker = "[[IMG_N]]";
-  const mlen = marker.length;
-  const e = document.querySelector(".ProseMirror");
-  const v = e?.pmViewDesc?.view;
-  if (v) {
-    let p = -1;
-    v.state.doc.descendants((n, pos) => {
-      if (p !== -1) return false;
-      if (n.isText && n.text && n.text.includes(marker)) { p = pos + n.text.indexOf(marker); return false; }
-    });
-    if (p !== -1) { v.dispatch(v.state.tr.delete(p, p + mlen)); v.focus(); return {ok:true, method:"pm", pos:p}; }
-  }
-  const w = document.createTreeWalker(e, NodeFilter.SHOW_TEXT);
-  while (w.nextNode()) {
-    const i = w.currentNode.textContent.indexOf(marker);
-    if (i !== -1) {
-      const r = document.createRange(); r.setStart(w.currentNode, i); r.setEnd(w.currentNode, i + mlen);
-      const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); r.deleteContents();
-      return {ok:true, method:"dom"};
-    }
-  }
-  return {ok:false, error:"marker not found"};
-})()'
-
-# 2. Let ProseMirror catch up
-agent-browser wait 500
-
-# 3. Paste the image
-agent-browser --session-name zsxq eval "$(cat /tmp/zsxq_paste_image.js)"
-```
-
-If the image paste JS is still large on Windows, do not pass it as a raw command argument. Either reduce the image size further with `--max-size` / `--max-inline-chars`, or run through a shell-safe path that your local `agent-browser` supports.
-
-After each image, verify and give the upload time to resolve:
-
-```bash
-agent-browser wait 3000
-agent-browser --session-name zsxq eval 'document.querySelectorAll(".ProseMirror img:not(.ProseMirror-separator)[src]").length'
-```
-
-If `resolved_path` was `null` for an image in the JSON summary, the content pipeline couldn't find the file on disk. Skip that image, warn the user, and continue — there's no safe way to guess.
-
-## Publish pipeline
-
-### Schedule the publish for tomorrow 10:00
-
-A scheduled post behaves like a draft until its scheduled time — the user can still open it, edit it, or cancel it from "我的文章". There's no need to click "保存" first: scheduling is itself the save.
-
-Setting a scheduled publish time mutates the publish button: its text changes from `发布` to `定时发布`. Never click it while it still says `发布` — that posts instantly, which the skill must never do.
-
-Enable the schedule toggle first:
-
-```bash
-agent-browser --session-name zsxq click ".scheduled-topic-timer label.green"
-agent-browser wait 1000
-```
-
-Then set tomorrow's date and pick 10:00 from the hour/minute lists. flatpickr owns the date input, so we go through its instance:
-
-```bash
-agent-browser --session-name zsxq eval '(() => {
-  const tomorrow = new Date(Date.now() + 86400000);
-  const y = tomorrow.getFullYear();
-  const m = String(tomorrow.getMonth() + 1).padStart(2, "0");
-  const d = String(tomorrow.getDate()).padStart(2, "0");
-  const dateStr = y + "/" + m + "/" + d;
-  const hour = "10";
-  const minute = "00";
-  const input = document.querySelector(".scheduled-topic-timer #date.flatpickr-input");
-  const fp = input?._flatpickr;
-  if (!fp) return { ok: false, reason: "flatpickr not found" };
-  fp.setDate(dateStr, true, "Y/m/d");
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.dispatchEvent(new Event("change", { bubbles: true }));
-  const boxes = [...document.querySelectorAll(".scheduled-topic-timer app-topic-timer .time")];
-  if (boxes.length < 2) return { ok: false, reason: "time boxes not found" };
-  const pick = (box, val) => {
-    const hit = [...box.querySelectorAll("li")].find(li => li.textContent.trim() === val);
-    if (hit) { hit.click(); return val; }
-    const first = box.querySelector("li");
-    if (first) { first.click(); return first.textContent.trim(); }
-    return null;
-  };
-  const h = pick(boxes[0], hour);
-  const mi = pick(boxes[1], minute);
-  const postText = document.querySelector(".operation-btns .post.btn")?.textContent?.trim() || "";
-  return { ok: true, date: input.value, hour: h, minute: mi, postText, scheduled: dateStr + " " + h + ":" + mi };
-})()'
-```
-
-Confirm the button text flipped, then submit:
-
-```bash
-agent-browser --session-name zsxq eval 'document.querySelector(".operation-btns .post.btn")?.textContent?.trim()'
-# Expected: "定时发布". If it still says "发布", re-toggle the schedule switch and re-run the date setter.
-agent-browser --session-name zsxq eval '(() => { const boxes = [...document.querySelectorAll(".scheduled-topic-timer app-topic-timer .time")]; const input = document.querySelector(".scheduled-topic-timer #date.flatpickr-input"); return { date: input?.value, hour: boxes[0]?.childNodes[0]?.textContent?.trim(), minute: boxes[1]?.childNodes[0]?.textContent?.trim() }; })()'
-# Expected hour/minute: 10 and 0. If it selected another hour, click the time box open first, then click the desired li.
-
-agent-browser --session-name zsxq click ".operation-btns .post.btn"
-agent-browser wait 2000
-```
-
-Report back to the user:
-
-```
-✅ 已设置定时发布：明天 YYYY/MM/DD 10:00。请在"我的文章"中确认。
-```
-
-## Invariants
-
-These are the things that, if violated, quietly break the skill in ways that are hard to diagnose:
-
-- **Always run `agent-browser close --all` once at the start.** Mixing a leftover headless daemon with a new headed session is the most common confusing failure.
-- **Never click the publish button while it reads `发布`.** That publishes instantly. The only safe path is: schedule first, confirm the button text flipped to `定时发布`, then click.
-- **Always go through the helper scripts for content and image pasting.** Constructing JS inline in the shell is a well of subtle escaping bugs.
-- **For Notion sources, always localize images before paste.** Zsxq's Milkdown only ingests images via binary paste; remote URLs in the Markdown body will render as broken links.
-- **Do not modify the original source.** Never write back to the user's local Markdown file, and never edit the Notion page. All transformations happen in `/tmp/zsxq-notion/` or similar scratch directories.
-
-## See also
-
-- [`references/troubleshooting.md`](references/troubleshooting.md) — recovery steps for the failures that actually happen in practice.
-- [`references/editor-internals.md`](references/editor-internals.md) — Quill vs Milkdown, the element reference table, and why the image pipeline is three commands instead of one.
+See [`references/troubleshooting.md`](references/troubleshooting.md) for
+Ego Lite login handoff, editor mode, image synchronization, and scheduling
+recovery guidance. See [`references/editor-internals.md`](references/editor-internals.md)
+for the Milkdown/ProseMirror insertion model.

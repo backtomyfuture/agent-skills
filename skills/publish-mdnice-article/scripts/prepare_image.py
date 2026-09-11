@@ -3,8 +3,8 @@
 Prepare an image for injection into Markdown Nice editor via synthetic ClipboardEvent.
 
 Reads an image file, base64-encodes it, and writes a self-contained JS file
-that can be eval'd by agent-browser to paste the image into Markdown Nice
-using a synthetic binary ClipboardEvent.
+that can be passed to Ego Lite ``page.evaluate()`` to paste the image into
+Markdown Nice using a synthetic binary ClipboardEvent.
 
 This bypasses system clipboard entirely — no headed mode or OS permissions needed.
 
@@ -13,10 +13,12 @@ Usage:
     python3 prepare_image.py /path/to/image.png --output /tmp/mdnice_paste_image.js
     python3 prepare_image.py /path/to/image.png --max-size 1500
 
-Then run (marker deletion is a SEPARATE step — see SKILL.md Step 6):
-    agent-browser --session-name mdnice eval "$(cat /tmp/mdnice_paste_image.js)"
+Then pass the generated file to ``page.evaluate()`` after deleting the marker
+as a separate step. The migration stage helper loads the file and runs:
 
-Output JSON from eval: { ok, size }
+    await page.evaluate(await readFile("/tmp/mdnice_paste_image.js", "utf8"));
+
+Output object from ``page.evaluate()``: { ok, size }
 """
 
 import argparse

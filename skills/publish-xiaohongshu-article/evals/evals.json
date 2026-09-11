@@ -10,7 +10,7 @@
     {
       "id": 2,
       "prompt": "这个 Notion 链接里的文章帮我发小红书，图片要保持在本地并上传，话题加 AI 和 效率工具。",
-      "expected_output": "先获取 Notion Markdown，运行 notion_ingest.py 本地化图片，再用 prepare_note.py 添加话题并进入 xiaohongshu-skills CLI 发布预览流程；如未登录则要求用户自行用浏览器/agent-browser 登录后继续。",
+      "expected_output": "先获取 Notion Markdown，运行 notion_ingest.py 本地化图片，再用 prepare_note.py 添加话题并进入 xiaohongshu-skills CLI 发布预览流程；如未登录则要求用户在 Ego Lite TaskSpace 中自行登录，并在同一任务中交接回来后继续。",
       "files": []
     },
     {

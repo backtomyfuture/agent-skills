@@ -3,18 +3,20 @@
 Prepare Markdown content for Markdown Nice editor injection.
 
 Reads a Markdown file, strips Notion/export metadata, extracts title,
-and writes a self-contained JS file that can be eval'd by agent-browser
-to paste the content into the Markdown Nice editor.
+and writes a self-contained JS file for Ego Lite ``page.evaluate()``.
+The generated script pastes the content into the Markdown Nice editor.
 
 Usage:
     python3 prepare_content.py /path/to/article.md
     python3 prepare_content.py /path/to/article.md --output /tmp/mdnice_paste_content.js
     python3 prepare_content.py /path/to/article.md --title "Custom Title"
 
-Then run:
-    agent-browser --session-name mdnice eval "$(cat /tmp/mdnice_paste_content.js)"
+Then pass the generated file to ``page.evaluate()`` inside ``ego-browser
+nodejs``. The migration stage helper does this automatically:
 
-Output JSON from eval: { success, charCount, method }
+    await page.evaluate(await readFile("/tmp/mdnice_paste_content.js", "utf8"));
+
+Output object from ``page.evaluate()``: { success, charCount, method }
 """
 
 import argparse
@@ -175,12 +177,12 @@ def strip_image_references(content: str, source_dir: str = None) -> tuple[str, l
             decoded_src = unquote(img['src'])
             candidate = os.path.join(source_dir, decoded_src)
             if os.path.isfile(candidate):
-                img['resolved_path'] = os.path.abspath(candidate)
+                img['resolved_path'] = str(Path(candidate).resolve())
             else:
                 # Also try the raw src
                 candidate2 = os.path.join(source_dir, img['src'])
                 if os.path.isfile(candidate2):
-                    img['resolved_path'] = os.path.abspath(candidate2)
+                    img['resolved_path'] = str(Path(candidate2).resolve())
                 else:
                     img['resolved_path'] = None
         else:

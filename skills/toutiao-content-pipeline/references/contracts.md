@@ -103,7 +103,7 @@ The visual helper writes this shape:
       "html_file": "/abs/path/visuals/cover.html",
       "png_file": "/abs/path/visuals/cover.png",
       "open_url": "file:///abs/path/visuals/cover.html",
-      "render_command": "agent-browser ..."
+      "render_command": "ego-browser nodejs ..."
     }
   ],
   "warnings": []

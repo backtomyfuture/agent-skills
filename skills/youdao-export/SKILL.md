@@ -2,152 +2,113 @@
 name: youdao-export
 description: >
   Export all files from Youdao Cloud Notes (有道云笔记) to local filesystem,
-  preserving original folder structure. Supports ALL file types: notes (exported as .docx),
-  Word attachments, PDF, Excel, PPT. Includes post-download verification.
-  Use when the user wants to export, backup, or download from Youdao Cloud Notes.
-  Triggers on: "导出有道云笔记", "备份有道云", "youdao export", "下载有道云笔记",
-  "有道云笔记迁移", or any task involving Youdao Cloud Notes data export.
+  preserving original folder structure. Supports notes exported as .docx,
+  Word attachments, PDF, Excel, and PPT, with post-download verification.
+  Use when the user wants to export, back up, or download from Youdao Cloud
+  Notes. The workflow uses one Ego Lite TaskSpace, hands off only for manual
+  login, and resumes the same task after the user returns control.
 ---
 
 # 有道云笔记全量导出
 
-将有道云笔记网页版的所有文件（笔记、Word、PDF、Excel、PPT）导出到本地，保持原始文件夹结构。
+Use Ego Lite to export the files in `https://note.youdao.com/web` to a local
+directory while preserving the visible folder tree. Notes use **导出为Word**;
+other supported attachments use **下载**. The workflow verifies the local
+result before it closes the TaskSpace.
 
-## 前置条件
+## Safety and inputs
 
-- chrome-cdp skill 已安装
-- Chrome 远程调试已开启（`chrome://inspect/#remote-debugging`）
+- Use exactly one Ego Lite TaskSpace for the entire export and verification.
+- The default output directory is `~/Downloads/youdao-export`; accept an
+  explicit absolute path when the user provides one.
+- A missing or expired login is normal. Open the site, report
+  `login_required`, call `task.handOff()`, and ask the user to log in in the
+  handed-off Ego Lite page. Resume with the returned `taskSpaceId`; do not
+  create a second TaskSpace.
+- Use only the managed Ego Lite session; never read, copy, or persist browser
+  credentials or session state.
+- Treat an ambiguous download as failed. Do not click the same menu item again
+  without inspecting the current page.
 
-## 工作流程（5 步）
+## Export and verify
 
-### 第 1 步：打开网站并登录
-
-1. 使用 chrome-cdp 的 `scripts/cdp.mjs list` 查看是否已有有道云笔记 tab
-2. 如果没有，提示用户在 Chrome 中打开 `https://note.youdao.com/web` 并登录
-3. 等用户确认已登录后，获取 target ID
+Prepare the output directory and run the importable helper in Ego Lite:
 
 ```bash
-node <chrome-cdp>/scripts/cdp.mjs list
-# 找到 note.youdao.com 对应的 target ID（如 B1E49379）
+ego-browser nodejs <<'EOF'
+import { exportAll } from "/Users/jarod/Documents/agent-skills/skills/youdao-export/scripts/export-all.mjs";
+
+await exportAll({
+  outputDir: "/Users/you/Downloads/youdao-export",
+});
+EOF
 ```
 
-### 第 2 步：确认下载目录
+The helper:
 
-询问用户指定本地输出目录（默认 `~/Downloads/youdao-export`），然后：
+1. creates or reclaims the single TaskSpace and opens the Youdao page;
+2. hands off for manual login when the folder tree is unavailable;
+3. rebuilds the virtual folder tree before each folder click;
+4. excludes child folders from the file list;
+5. opens each file, reveals the toolbar, and clicks the appropriate visible
+   action;
+6. arms `page.waitForEvent("download")` before the action and saves the
+   completed artifact with `download.saveAs()` into the target folder;
+7. skips files already present using the existing prefix matching rules;
+8. verifies missing, extra, and extra-folder results through
+   `scripts/verify.mjs`;
+9. prints a structured report and a local screenshot, then closes the
+   TaskSpace.
 
-1. 创建临时下载目录用于 Chrome 下载中转：`<outputDir>/.downloads`
-2. 通过 CDP 设置 Chrome 下载路径（**关键**，避免沙箱权限问题）：
+If the first call reports `login_required`, reuse the same inputs and ID:
 
-```javascript
-// 使用 cdp.mjs evalraw 调用 Page.setDownloadBehavior
-cdpEvalRaw("Page.setDownloadBehavior", { behavior: "allow", downloadPath: tempDlDir })
+```bash
+ego-browser nodejs <<'EOF'
+import { exportAll } from "/Users/jarod/Documents/agent-skills/skills/youdao-export/scripts/export-all.mjs";
+
+await exportAll({
+  taskSpaceId: 123,
+  outputDir: "/Users/you/Downloads/youdao-export",
+});
+EOF
 ```
 
-### 第 3 步：遍历并下载所有文件
+Do not call `task.finish()` after `login_required`; the helper has already
+handed the page to the user. The continuation owns the same task and finishes
+it only after export and verification succeed.
 
-执行 `scripts/export-all.mjs`，核心逻辑：
+## Standalone verification round
 
-#### 3a. 获取文件夹树
+If export and verification must be separated, reclaim the same TaskSpace and
+call the verifier with its managed page:
 
-**关键经验**：
-- 使用 `[id^="filenode-"]` 选择器（**不是** `[id^="filenode-WEB"]`），因为有些文件夹是 `filenode-SVR` 开头
-- 用 `e.style.paddingLeft`（**内联 style**）获取缩进深度，**不是** `getComputedStyle`
-- pl=12 是顶级，pl=24 是二级，pl=36 是三级
-- 有道云笔记使用虚拟列表，**每次点击文件夹前必须重新获取节点列表**（通过名称匹配找到当前 ID）
+```bash
+ego-browser nodejs <<'EOF'
+import { verifyExport } from "/Users/jarod/Documents/agent-skills/skills/youdao-export/scripts/verify.mjs";
 
-```javascript
-// 正确获取文件夹树
-const raw = cdpEval(`JSON.stringify([...document.querySelectorAll('[id^="filenode-"]')].map(function(e){
-  var pl = parseInt(e.style.paddingLeft) || 0;
-  var nameEl = e.querySelector('.file-name');
-  var name = nameEl ? nameEl.textContent.trim() : e.textContent.trim().split('\\n')[0].trim();
-  return { id: e.id, name: name, pl: pl };
-}))`);
+const task = await taskSpace(123);
+const page = task.page("p1");
+console.log(await verifyExport({
+  page,
+  outputDir: "/Users/you/Downloads/youdao-export",
+}));
+EOF
 ```
 
-#### 3b. 构建路径树
+Use the actual `taskSpaceId` returned by the export round. Keep the page open
+only if the user needs to inspect it; otherwise finish the TaskSpace after the
+verification result is recorded.
 
-```javascript
-const stack = [];
-for (const f of allFolders) {
-  while (stack.length > 0 && stack[stack.length - 1].pl >= f.pl) stack.pop();
-  const parent = stack.length > 0 ? stack[stack.length - 1].path : "";
-  f.path = parent ? parent + "/" + f.name : f.name;
-  stack.push({ pl: f.pl, path: f.path });
-}
-```
+## Results
 
-#### 3c. 逐文件夹下载
+Report:
 
-对每个文件夹：
+- output directory;
+- total web files, newly downloaded files, skipped existing files, and failed
+  downloads;
+- renamed duplicate suffixes;
+- verification totals;
+- missing files, extra files, or extra folders;
+- screenshot path and whether verification succeeded.
 
-1. **重新获取节点列表**，通过名称找到当前 ID（虚拟列表可能重排）
-2. 点击文件夹，等待 1.5-2 秒
-3. 获取文件列表，**排除子文件夹**：
-   ```javascript
-   // type_folder 是子文件夹，过滤掉
-   .filter(x => x.type !== '#type_folder')
-   ```
-4. 根据文件类型选择下载方式：
-
-| 文件类型（xlink:href） | 下载方式 |
-|------------------------|----------|
-| `#type_note` | 点击文件 → 显示 `.widget-menu` → 点击"导出为Word" |
-| `#type_word` / `#type_pdf` / `#type_excel` / `#type_ppt` | 点击文件 → 显示 `.widget-menu` → 点击"下载" |
-
-**下载操作的关键步骤**：
-
-```javascript
-// 1. 点击文件项打开预览
-document.querySelectorAll('.list-li.file-item')[index].click()
-// 等待 2 秒
-
-// 2. 强制显示工具栏菜单（有道云用 JS 控制显隐）
-var ul = document.querySelector('.widget-menu');
-if (ul) { ul.style.display='block'; ul.style.visibility='visible'; ul.style.opacity='1'; }
-// 等待 0.5 秒
-
-// 3. 点击菜单项
-var items = document.querySelectorAll('.widget-menu .toolbar-menu-item');
-for (var i = 0; i < items.length; i++) {
-  var t = items[i].textContent.trim();
-  if (t === '导出为Word' || t === '下载') { items[i].click(); break; }
-}
-```
-
-5. 在临时下载目录检测新文件（轮询，忽略 `.crdownload` 和 `.tmp`）
-6. 移动到正确的本地文件夹
-
-### 第 4 步：验证
-
-执行 `scripts/verify.mjs`，核心逻辑：
-
-1. 重新获取网页文件夹树（同第 3 步方法）
-2. 逐文件夹对比网页文件列表与本地文件
-3. 匹配时注意：
-   - 笔记导出后文件名可能被截断（有道云导出 Word 时会截断长标题）
-   - 用前 18 个字符做模糊匹配
-   - 忽略 Chrome 添加的 `(1)` `(2)` 后缀
-
-### 第 5 步：统计报告
-
-输出：
-- 网页文件总数 / 本地文件总数
-- 网页文件夹数 / 本地文件夹数
-- 缺失文件列表（如有）
-- 多余文件列表（如有）
-- 下载成功/失败/跳过数量
-
-## 脚本说明
-
-| 脚本 | 用途 |
-|------|------|
-| `scripts/export-all.mjs` | 主脚本：遍历所有文件夹，下载所有文件 |
-| `scripts/verify.mjs` | 验证：逐文件夹对比网页与本地 |
-
-## 已知问题与应对
-
-1. **虚拟列表跳位**：有道云笔记左侧树使用虚拟列表，点击操作后节点 ID 可能变化。解决：每次点击前重新获取节点列表
-2. **`(1)` `(2)` 后缀**：Chrome 对同名文件自动加后缀。解决：下载完成后统一重命名
-3. **"导出为Word"下载位置不受 `Page.setDownloadBehavior` 控制**：部分笔记的 Word 导出会下载到 `~/Downloads`。解决：同时监控两个目录
-4. **文件名中含 `.` 导致匹配误判**：如 `V1.0.docx`，normalize 会错误截断。解决：用前缀匹配而非精确匹配
+Do not claim a complete export when `verification.success` is false.
