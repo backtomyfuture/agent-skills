@@ -12,6 +12,7 @@ Each directory under `skills/` is a standalone skill:
 - `exchange-cli` - operate Exchange/Outlook mail, calendar, tasks, and contacts.
 - `format-platform-article` - format local Markdown/media into a WeChat-first multi-platform publish package.
 - `hna-leave-application` - submit leave applications (休假呈报) on the HNA internal HR portal.
+- `kaoqin` - automate monthly performance assessment: G2/G3/G4 from Feishu, G7 from OA, and fill Jinshan sheet.
 - `lark-minutes-base-sync` - sync owned Feishu Minutes into a Base inbox.
 - `markdown-table-images` - render publication-risky Markdown tables as PNG images.
 - `monthly-attendance` - fill monthly attendance spreadsheets from OA, Notion, and leave records.
@@ -26,6 +27,7 @@ Each directory under `skills/` is a standalone skill:
 - `toutiao-content-pipeline` - collect and verify sources, then draft and stage Toutiao articles/micro-posts.
 - `wechat-cli` - query local WeChat chat data with the `wechat-cli` binary.
 - `wecom-checkin` - query WeCom attendance/check-in status.
+- `weekly-work-plan` - fill 傅强's weekly Feishu Base work plan: close last week and copy next week's plan.
 - `youdao-export` - export Youdao Cloud Notes to local files.
 
 ## Install
@@ -43,6 +45,7 @@ npx skills add backtomyfuture/agent-skills@bark-notify -g -y
 npx skills add backtomyfuture/agent-skills@exchange-cli -g -y
 npx skills add backtomyfuture/agent-skills@format-platform-article -g -y
 npx skills add backtomyfuture/agent-skills@hna-leave-application -g -y
+npx skills add backtomyfuture/agent-skills@kaoqin -g -y
 npx skills add backtomyfuture/agent-skills@lark-minutes-base-sync -g -y
 npx skills add backtomyfuture/agent-skills@markdown-table-images -g -y
 npx skills add backtomyfuture/agent-skills@monthly-attendance -g -y
@@ -57,6 +60,7 @@ npx skills add backtomyfuture/agent-skills@report-to-email -g -y
 npx skills add backtomyfuture/agent-skills@toutiao-content-pipeline -g -y
 npx skills add backtomyfuture/agent-skills@wechat-cli -g -y
 npx skills add backtomyfuture/agent-skills@wecom-checkin -g -y
+npx skills add backtomyfuture/agent-skills@weekly-work-plan -g -y
 npx skills add backtomyfuture/agent-skills@youdao-export -g -y
 ```
 
@@ -69,6 +73,7 @@ agent-skills/
     ├── exchange-cli/
     ├── format-platform-article/
     ├── hna-leave-application/
+    ├── kaoqin/
     ├── lark-minutes-base-sync/
     ├── markdown-table-images/
     ├── monthly-attendance/
@@ -83,6 +88,7 @@ agent-skills/
     ├── toutiao-content-pipeline/
     ├── wechat-cli/
     ├── wecom-checkin/
+    ├── weekly-work-plan/
     └── youdao-export/
 ```
 
