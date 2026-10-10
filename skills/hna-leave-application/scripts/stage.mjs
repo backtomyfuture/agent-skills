@@ -83,9 +83,42 @@ export async function stage(options) {
     return;
   }
 
-  const popupPromise = page.waitForEvent("popup", { timeout: 10_000 });
-  await page.click("#btnFixedFlow", { label: "open approval flow" });
-  const popup = await popupPromise;
+  let popup;
+  const existingTab = (await task.tabs()).find(
+    (item) =>
+      item.url.includes("MyFlow.aspx") ||
+      item.url.includes("FixedFlow") ||
+      item.title.includes("流程"),
+  );
+  if (existingTab) {
+    popup = existingTab.label
+      ? task.page(existingTab.label)
+      : task.adopt(existingTab.page);
+  } else {
+    await page
+      .waitForFunction(
+        () =>
+          Boolean(
+            window.jQuery &&
+              window.jQuery._data?.(
+                document.querySelector("#btnFixedFlow"),
+                "events",
+              )?.click,
+          ),
+        undefined,
+        { timeout: 15_000 },
+      )
+      .catch(() => {});
+    const popupPromise = page.waitForEvent("popup", { timeout: 10_000 });
+    const receipt = await page.click("#btnFixedFlow", {
+      label: "open approval flow",
+    });
+    if (receipt?.popups?.[0]) {
+      popup = task.page(receipt.popups[0].label);
+    } else {
+      popup = await popupPromise;
+    }
+  }
   await popup.waitForFunction(
     (flowName) =>
       [...document.querySelectorAll("a")].some(
