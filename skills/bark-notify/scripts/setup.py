@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-Bark Notify — Interactive Setup
-================================
+Bark Notify — Setup Script
+==========================
 Parses your Bark URL and creates the .env configuration file.
+Supports both non-interactive CLI usage and interactive prompts.
 
 Usage:
-    python3 scripts/setup.py
-    python3 scripts/setup.py "https://your-server.com/YOUR_KEY/test"
-    python3 scripts/setup.py "https://your-server.com/YOUR_KEY/"
+    # Quick / non-interactive (recommended for agents and scripts):
+    python3 scripts/setup.py "https://bark.example.com:8443/YOUR_KEY/" --force
+    python3 scripts/setup.py --url "https://api.day.app/YOUR_KEY/" --machine "MacBook" --force
 
-The Bark URL is the one you copy from the Bark iOS app.
+    # Interactive:
+    python3 scripts/setup.py
 """
+import argparse
 import os
-import re
 import sys
 from pathlib import Path
 from urllib import parse
@@ -34,101 +36,105 @@ def parse_bark_url(url: str) -> tuple:
         https://example.com/YOUR_KEY
     """
     url = url.strip().strip('"').strip("'")
-
     parsed = parse.urlparse(url)
     if not parsed.scheme or not parsed.netloc:
         return None, None
 
-    # Path segments: first non-empty segment is the key
     segments = [s for s in parsed.path.split("/") if s]
     if not segments:
         return None, None
 
     device_key = segments[0]
     base_url = f"{parsed.scheme}://{parsed.netloc}"
-
     return base_url, device_key
 
 
 def prompt_input(prompt: str, default: str = "") -> str:
-    """Prompt user for input with optional default."""
-    if default:
-        prompt = f"{prompt} [{default}]: "
-    else:
-        prompt = f"{prompt}: "
-    value = input(prompt).strip()
-    return value if value else default
+    """Prompt user for input with optional default in interactive mode."""
+    if not sys.stdin.isatty():
+        return default
+    prompt_str = f"{prompt} [{default}]: " if default else f"{prompt}: "
+    try:
+        val = input(prompt_str).strip()
+        return val if val else default
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
 
 
 def main() -> int:
-    print("=" * 50)
-    print("  Bark Notify — Setup")
-    print("=" * 50)
-    print()
+    parser = argparse.ArgumentParser(description="Configure bark-notify .env settings.")
+    parser.add_argument("url_pos", nargs="?", help="Bark URL (e.g. https://server/KEY/)")
+    parser.add_argument("--url", dest="url_opt", help="Bark URL")
+    parser.add_argument("--key", help="Bark device key")
+    parser.add_argument("--server", help="Bark server base URL (default: https://api.day.app)")
+    parser.add_argument("--machine", help="Machine name shown in notifications")
+    parser.add_argument("-f", "--force", action="store_true", help="Overwrite existing .env without prompting")
 
-    base_url = ""
-    device_key = ""
+    args = parser.parse_args()
 
-    # Try to parse URL from command-line argument
-    if len(sys.argv) > 1:
-        url = " ".join(sys.argv[1:])
-        base_url, device_key = parse_bark_url(url)
-        if base_url and device_key:
-            print(f"  Parsed from URL:")
-            print(f"    Server:  {base_url}")
-            print(f"    Key:     {device_key}")
-            print()
+    raw_url = args.url_opt or args.url_pos
+    base_url = args.server or ""
+    device_key = args.key or ""
+
+    if raw_url:
+        parsed_base, parsed_key = parse_bark_url(raw_url)
+        if parsed_base and parsed_key:
+            base_url = base_url or parsed_base
+            device_key = device_key or parsed_key
         else:
-            print(f"  ⚠ Could not parse URL: {url}")
-            print()
-            base_url = ""
-            device_key = ""
+            sys.stderr.write(f"⚠ Could not parse URL: {raw_url}\n")
 
-    # Interactive prompts for missing values
+    # Interactive fallback if missing required fields
     if not base_url or not device_key:
-        print("  Paste your Bark URL from the iOS app")
-        print("  (e.g. https://api.day.app/YOUR_KEY/test)")
-        print()
-        url = prompt_input("  Bark URL")
-        if url:
-            base_url, device_key = parse_bark_url(url)
+        if sys.stdin.isatty():
+            print("=" * 50)
+            print("  Bark Notify — Interactive Setup")
+            print("=" * 50)
+            print()
+            input_url = prompt_input("  Paste your Bark URL from iOS app")
+            if input_url:
+                parsed_base, parsed_key = parse_bark_url(input_url)
+                if parsed_base and parsed_key:
+                    base_url = base_url or parsed_base
+                    device_key = device_key or parsed_key
             if not base_url or not device_key:
-                print("\n  ❌ Could not parse the URL.")
-                print("  Expected format: https://server/KEY/...")
-                return 1
+                base_url = prompt_input("  Server URL", base_url or "https://api.day.app")
+                device_key = prompt_input("  Device Key", device_key)
         else:
-            # Manual entry
-            base_url = prompt_input("  Server URL", "https://api.day.app")
-            device_key = prompt_input("  Device Key")
+            sys.stderr.write("❌ Missing required Bark URL or device key in non-interactive mode.\n")
+            return 1
 
     if not device_key:
-        print("\n  ❌ Device key is required.")
+        sys.stderr.write("❌ Device key is required.\n")
         return 1
 
-    machine_name = prompt_input(
-        "\n  Machine name (shown in notifications, optional)",
-        os.uname().nodename.split(".")[0] if hasattr(os, "uname") else ""
-    )
+    base_url = (base_url or "https://api.day.app").rstrip("/")
 
-    # Confirm
-    print()
-    print("  Configuration:")
-    print(f"    BARK_BASE_URL    = {base_url}")
-    print(f"    BARK_KEY         = {device_key}")
-    if machine_name:
-        print(f"    BARK_MACHINE_NAME = {machine_name}")
-    print()
+    # Machine name detection
+    default_machine = os.uname().nodename.split(".")[0] if hasattr(os, "uname") else ""
+    machine_name = args.machine
+    if machine_name is None:
+        if sys.stdin.isatty() and not args.force:
+            machine_name = prompt_input("  Machine name (optional)", default_machine)
+        else:
+            machine_name = default_machine
 
-    if ENV_PATH.exists():
-        overwrite = prompt_input("  .env already exists. Overwrite? (y/N)", "N")
-        if overwrite.lower() != "y":
-            print("  Aborted.")
+    # Check overwrite
+    if ENV_PATH.exists() and not args.force:
+        if sys.stdin.isatty():
+            overwrite = prompt_input("  .env already exists. Overwrite? (y/N)", "N")
+            if overwrite.lower() != "y":
+                print("  Aborted.")
+                return 0
+        else:
+            # In non-interactive mode without --force, abort to prevent accidental overwrite
+            sys.stderr.write(f"⚠ {ENV_PATH} already exists. Pass --force to overwrite.\n")
             return 0
 
-    # Write .env
     lines = [
         "# Bark Push Notification Configuration",
-        f"# Generated by setup.py",
+        "# Generated by setup.py",
         "",
         f"BARK_KEY={device_key}",
         f"BARK_BASE_URL={base_url}",
@@ -146,12 +152,9 @@ def main() -> int:
     ])
 
     ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"  ✅ Configuration saved to {ENV_PATH}")
-    print()
-    print("  Test it with:")
-    print(f"    python3 {SKILL_DIR}/scripts/send_bark_notification.py \\")
-    print(f'      --title "Hello" --body "Bark is ready!" --sound chime')
-    print()
+    print(f"✅ Configuration saved to {ENV_PATH}")
+    print(f"   Server: {base_url}")
+    print(f"   Key:    {device_key[:4]}****{device_key[-4:] if len(device_key) > 8 else ''}")
     return 0
 
 
