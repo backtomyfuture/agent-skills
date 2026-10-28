@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 月度绩效考核出勤查询脚本 (kaoqin 内置)
-用于从海航 OA 查询指定月份的休假公文并生成月度绩效考核 G7 出勤情况总结。
+基于 ego-browser 从海航 OA 查询指定月份的休假公文并生成月度绩效考核 G7 出勤情况总结。
 """
 
 import argparse
@@ -12,30 +12,7 @@ import os
 import re
 import subprocess
 import sys
-import time
 from collections import defaultdict
-
-
-def run_command(cmd, timeout=40, retries=2, retry_delay=1.5):
-    """运行外部命令并返回 stdout 字符串，支持失败重试"""
-    for attempt in range(retries + 1):
-        try:
-            res = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                return res.stdout.strip()
-            if attempt < retries:
-                time.sleep(retry_delay)
-        except Exception:
-            if attempt < retries:
-                time.sleep(retry_delay)
-    return None
 
 
 def parse_month_arg(month_str, default_year=None):
@@ -228,29 +205,61 @@ def extract_leave_records(text, default_year):
     return unique_records
 
 
-def query_attendance(target_year, target_month):
+def fetch_oa_leave_docs(target_year, timeout=60):
     """
-    查询指定年月的绩效考核出勤数据并解析
+    通过 ego-browser 调用 query_oa.mjs 获取指定年份的所有审批休假公文及其详情内容
     """
-    cmd = f'opencli hnaoa query --year {target_year} --category "我呈报的公文" --limit 50 -f json'
-    output = run_command(cmd)
-    if not output:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    mjs_path = os.path.join(script_dir, "query_oa.mjs")
+
+    node_code = f"""
+import {{ queryOALeaveDocuments }} from "{mjs_path}";
+try {{
+  const res = await queryOALeaveDocuments({target_year});
+  console.log("__JSON_START__" + JSON.stringify(res) + "__JSON_END__");
+}} catch (err) {{
+  console.log("__JSON_START__" + JSON.stringify({{ success: false, error: err.message }}) + "__JSON_END__");
+}}
+"""
+    try:
+        p = subprocess.run(
+            ["ego-browser", "nodejs"],
+            input=node_code,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"调用 ego-browser 失败: {e}"}
+
+    combined = (p.stdout or "") + "\n" + (p.stderr or "")
+    m = re.search(r"__JSON_START__(.*?)__JSON_END__", combined, re.DOTALL)
+    if not m:
         return {
             "success": False,
-            "error": "未能从海航OA获取公文数据，请确认已登录OA系统",
-            "year": target_year,
-            "month": target_month,
-            "records": [],
-            "stats": {},
-            "summary_text": f"{target_month}月无休假；无异常出勤情况",
+            "error": f"未能从 ego-browser 获取有效响应: {combined.strip()}",
         }
 
     try:
-        docs = json.loads(output)
+        data = json.loads(m.group(1))
+        return data
     except Exception as e:
+        return {"success": False, "error": f"解析公文 JSON 失败: {e}"}
+
+
+def query_attendance(target_year, target_month):
+    """
+    查询指定年月的绩效考核出勤数据并解析 (基于 ego-browser)
+    """
+    oa_result = fetch_oa_leave_docs(target_year)
+    if not oa_result.get("success"):
+        err_msg = oa_result.get("error") or "未能从海航OA获取公文数据"
+        if oa_result.get("error") == "login_required" or "login" in err_msg.lower():
+            err_msg = "海航OA系统未登录或登录态已失效，请在 ego-browser 中登录海航OA系统 (http://oa3.hnair.net)"
         return {
             "success": False,
-            "error": f"解析OA公文JSON失败: {e}",
+            "error": err_msg,
             "year": target_year,
             "month": target_month,
             "records": [],
@@ -258,37 +267,14 @@ def query_attendance(target_year, target_month):
             "summary_text": f"{target_month}月无休假；无异常出勤情况",
         }
 
+    docs = oa_result.get("docs", [])
     target_month_records = []
     processed_docs = []
 
     for doc in docs:
-        doc_type = doc.get("type", "")
-        title = doc.get("title", "") or doc.get("flow_title", "")
+        title = doc.get("title", "")
         part_id = doc.get("part_id", "")
-
-        # 仅针对休假相关的公文进行详情查看
-        is_leave_doc = (
-            doc_type == "HRM休假申请"
-            or "休假" in title
-            or "补休" in title
-            or "年假" in title
-            or "倒休" in title
-        )
-        if not is_leave_doc or not part_id:
-            continue
-
-        view_cmd = f'opencli hnaoa view "{part_id}" --year {target_year} -f json'
-        view_out = run_command(view_cmd)
-        if not view_out:
-            continue
-
-        try:
-            vdata = json.loads(view_out)
-            if isinstance(vdata, list) and len(vdata) > 0:
-                vdata = vdata[0]
-            request_content = vdata.get("request_content", "")
-        except Exception:
-            request_content = ""
+        request_content = doc.get("request_content", "")
 
         if not request_content:
             continue
@@ -296,7 +282,9 @@ def query_attendance(target_year, target_month):
         records = extract_leave_records(request_content, default_year=target_year)
 
         # 过滤出落在目标月份的记录
-        matched_in_doc = [r for r in records if r["date"].year == target_year and r["date"].month == target_month]
+        matched_in_doc = [
+            r for r in records if r["date"].year == target_year and r["date"].month == target_month
+        ]
         if matched_in_doc:
             processed_docs.append({
                 "part_id": part_id,
